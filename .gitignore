@@ -205,3 +205,32 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Data directories - test sessions and outputs
+data/
+data/test_sessions/
+data/logs/
+data/debug/
+data/output/
+data/calibration/
+
+# Specific image and video files
+*.png
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+*.bag
+
+# But keep important data files if needed
+!data/README.md
+!data/.gitkeep
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# Model files (YOLO downloads)
+*.pt
+yolov*.pt

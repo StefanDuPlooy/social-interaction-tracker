@@ -1,6 +1,6 @@
 """
-Improved Person Detection Module
-Handles fragmented masks by merging nearby blobs
+Person Detector using YOLO + Depth
+Reliable person detection using YOLOv8 on RGB + depth for 3D positioning
 """
 
 import cv2
@@ -8,8 +8,14 @@ import numpy as np
 import logging
 from typing import List, Tuple, Optional, Dict
 from dataclasses import dataclass
-from scipy import ndimage
-from sklearn.cluster import DBSCAN
+import time
+
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    YOLO_AVAILABLE = False
+    print("YOLOv8 not available. Install with: pip install ultralytics")
 
 @dataclass
 class PersonDetection:
@@ -18,25 +24,22 @@ class PersonDetection:
     timestamp: float
     position_3d: Tuple[float, float, float]  # (x, y, z) in meters
     bounding_box: Tuple[int, int, int, int]  # (x, y, w, h) in pixels
-    confidence: float  # 0.0-1.0
-    detection_method: str  # 'blob', 'merged', 'skeleton'
+    confidence: float  # 0.0-1.0 (zone-based confidence)
+    detection_method: str  # 'yolo', 'yolo+depth'
     zone: str  # 'high', 'medium', 'low' confidence
-    blob_area: int  # pixel area of detected blob
+    blob_area: int  # For compatibility with existing code
 
-class ImprovedPersonDetector:
-    """Person detection with blob merging for fragmented masks."""
+class PersonDetector:
+    """YOLO + Depth person detector."""
     
     def __init__(self, config: dict):
-        """Initialize person detector with configuration."""
+        """Initialize YOLO person detector."""
         self.config = config
         self.logger = logging.getLogger(__name__)
         
-        # Detection parameters from config
-        self.min_blob_area = config.get('min_blob_area', 500)
-        self.max_blob_area = config.get('max_blob_area', 100000)
-        self.depth_threshold = config.get('depth_threshold', 0.05)
-        self.min_height = config.get('min_height', 0.2)
-        self.max_height = config.get('max_height', 3.0)
+        # Detection parameters
+        self.min_confidence = config.get('yolo_confidence_threshold', 0.5)
+        self.nms_threshold = config.get('nms_threshold', 0.4)
         
         # Camera configuration for 3D calculations
         self.camera_height = config.get('camera_height', 2.5)
@@ -44,250 +47,175 @@ class ImprovedPersonDetector:
         
         # Zone configuration
         self.detection_zones = config.get('detection_zones', {
-            'high_confidence': {'distance_range': (0.5, 15.0), 'weight': 1.0},
-            'medium_confidence': {'distance_range': (15.0, 20.0), 'weight': 0.7},
-            'low_confidence': {'distance_range': (20.0, 25.0), 'weight': 0.4}
+            'high_confidence': {'distance_range': (0.5, 8.0), 'weight': 1.0},
+            'medium_confidence': {'distance_range': (8.0, 15.0), 'weight': 0.7},
+            'low_confidence': {'distance_range': (15.0, 25.0), 'weight': 0.4}
         })
         
-    def preprocess_depth_frame(self, depth_frame: np.ndarray) -> np.ndarray:
-        """Preprocess depth frame for person detection."""
+        # Initialize YOLO model
+        self.model = None
+        self.model_loaded = False
+        self._load_yolo_model()
+    
+    def _load_yolo_model(self):
+        """Load YOLOv8 model."""
+        if not YOLO_AVAILABLE:
+            self.logger.error("YOLO not available. Please install ultralytics: pip install ultralytics")
+            return False
+        
+        try:
+            # Load YOLOv8n (nano) model - fastest for real-time
+            self.model = YOLO('yolov8n.pt')
+            self.model_loaded = True
+            self.logger.info("YOLOv8 model loaded successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"Failed to load YOLO model: {e}")
+            return False
+    
+    def detect_people_rgb(self, color_frame: np.ndarray) -> List[Dict]:
+        """Detect people in RGB image using YOLO."""
+        if not self.model_loaded or self.model is None:
+            return []
+        
+        try:
+            # Run YOLO inference
+            results = self.model(color_frame, verbose=False, conf=self.min_confidence)
+            
+            detections = []
+            for result in results:
+                boxes = result.boxes
+                if boxes is None:
+                    continue
+                
+                for box in boxes:
+                    # Only keep person detections (class 0 in COCO dataset)
+                    if int(box.cls) == 0:  # Person class
+                        confidence = float(box.conf)
+                        
+                        # Get bounding box coordinates
+                        x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                        x, y, w, h = int(x1), int(y1), int(x2-x1), int(y2-y1)
+                        
+                        # Ensure bounding box is within image bounds
+                        h_img, w_img = color_frame.shape[:2]
+                        x = max(0, min(x, w_img-1))
+                        y = max(0, min(y, h_img-1))
+                        w = max(1, min(w, w_img-x))
+                        h = max(1, min(h, h_img-y))
+                        
+                        detection = {
+                            'bounding_box': (x, y, w, h),
+                            'confidence': confidence,
+                            'centroid': (x + w//2, y + h//2),
+                            'method': 'yolo',
+                            'area': w * h
+                        }
+                        detections.append(detection)
+            
+            self.logger.debug(f"YOLO detected {len(detections)} people")
+            return detections
+            
+        except Exception as e:
+            self.logger.error(f"YOLO detection failed: {e}")
+            return []
+    
+    def add_depth_to_detections(self, rgb_detections: List[Dict], depth_frame: np.ndarray) -> List[Dict]:
+        """Add 3D position information to RGB detections using depth data."""
+        enhanced_detections = []
+        
         # Convert depth from millimeters to meters
         depth_meters = depth_frame.astype(np.float32) / 1000.0
         
-        # Remove invalid depths (0 values)
-        depth_meters[depth_meters == 0] = np.nan
-        
-        # Apply smaller median filter to preserve detail
-        depth_filtered = cv2.medianBlur(depth_meters.astype(np.float32), 3)
-        
-        # Less aggressive morphological operations
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        depth_filled = cv2.morphologyEx(depth_filtered, cv2.MORPH_CLOSE, kernel)
-        
-        return depth_filled
-    
-    def create_person_mask(self, depth_frame: np.ndarray) -> np.ndarray:
-        """Create binary mask highlighting potential person regions."""
-        # Define wider depth range
-        min_depth = 0.3  # meters
-        max_depth = 20.0  # meters
-        
-        # Create initial mask based on depth range
-        depth_mask = (depth_frame >= min_depth) & (depth_frame <= max_depth)
-        depth_mask = depth_mask.astype(np.uint8) * 255
-        
-        # More sensitive background removal
-        depth_valid = depth_frame[~np.isnan(depth_frame)]
-        if len(depth_valid) > 0:
-            # Use median instead of mode for more robust background estimation
-            background_depth = np.median(depth_valid)
+        for detection in rgb_detections:
+            x, y, w, h = detection['bounding_box']
+            centroid_x, centroid_y = detection['centroid']
             
-            # More sensitive threshold
-            background_mask = np.abs(depth_frame - background_depth) > self.depth_threshold
-            depth_mask = depth_mask & background_mask.astype(np.uint8) * 255
-        
-        # Less aggressive morphological operations to preserve fragments
-        small_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        larger_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-        
-        # Remove very small noise
-        depth_mask = cv2.morphologyEx(depth_mask, cv2.MORPH_OPEN, small_kernel)
-        
-        # Connect nearby fragments with more dilation
-        depth_mask = cv2.dilate(depth_mask, larger_kernel, iterations=3)
-        
-        # Fill holes
-        depth_mask = cv2.morphologyEx(depth_mask, cv2.MORPH_CLOSE, larger_kernel)
-        
-        return depth_mask
-    
-    def merge_nearby_blobs(self, contours: List, depth_frame: np.ndarray, max_distance: float = 100.0) -> List:
-        """Merge nearby blob contours that likely belong to the same person."""
-        if len(contours) <= 1:
-            return contours
-        
-        # Calculate centroids of all contours
-        centroids = []
-        for contour in contours:
-            M = cv2.moments(contour)
-            if M["m00"] > 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
-                centroids.append((cx, cy))
-            else:
-                centroids.append(None)
-        
-        # Group nearby contours using DBSCAN clustering
-        valid_centroids = [(i, c) for i, c in enumerate(centroids) if c is not None]
-        if len(valid_centroids) < 2:
-            return contours
-        
-        # Extract coordinates for clustering
-        coords = np.array([c[1] for c in valid_centroids])
-        indices = [c[0] for c in valid_centroids]
-        
-        # Cluster nearby centroids
-        clustering = DBSCAN(eps=max_distance, min_samples=1).fit(coords)
-        
-        # Merge contours in the same cluster
-        merged_contours = []
-        for cluster_id in set(clustering.labels_):
-            cluster_indices = [indices[i] for i, label in enumerate(clustering.labels_) if label == cluster_id]
+            # Get robust depth from detection area
+            centroid_depth = self._get_robust_depth(depth_meters, x, y, w, h)
             
-            if len(cluster_indices) == 1:
-                # Single contour - keep as is
-                merged_contours.append(contours[cluster_indices[0]])
-            else:
-                # Multiple contours - merge them
-                merged_contour = self._merge_contour_group([contours[i] for i in cluster_indices])
-                if merged_contour is not None:
-                    merged_contours.append(merged_contour)
-        
-        return merged_contours
-    
-    def _merge_contour_group(self, contour_group: List) -> Optional[np.ndarray]:
-        """Merge a group of contours into one."""
-        if not contour_group:
-            return None
-        
-        if len(contour_group) == 1:
-            return contour_group[0]
-        
-        # Create combined mask from all contours
-        # Get the bounding box of all contours combined
-        all_points = np.vstack(contour_group)
-        x, y, w, h = cv2.boundingRect(all_points)
-        
-        # Create mask for this region
-        mask = np.zeros((h + 10, w + 10), dtype=np.uint8)
-        
-        # Draw all contours on the mask
-        for contour in contour_group:
-            # Offset contour to mask coordinates
-            offset_contour = contour - [x - 5, y - 5]
-            cv2.fillPoly(mask, [offset_contour], 255)
-        
-        # Find the outer contour of the merged mask
-        merged_contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        if merged_contours:
-            # Convert back to original coordinates
-            largest_contour = max(merged_contours, key=cv2.contourArea)
-            return largest_contour + [x - 5, y - 5]
-        
-        return None
-    
-    def find_person_blobs(self, mask: np.ndarray, depth_frame: np.ndarray) -> List[Dict]:
-        """Find and analyze person-shaped blobs in the mask."""
-        # Find contours in the mask
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Filter by minimum area first
-        filtered_contours = [c for c in contours if cv2.contourArea(c) > self.min_blob_area]
-        
-        # Merge nearby blobs that might be fragments of the same person
-        merged_contours = self.merge_nearby_blobs(filtered_contours, depth_frame)
-        
-        person_blobs = []
-        
-        for i, contour in enumerate(merged_contours):
-            # Calculate contour properties
-            area = cv2.contourArea(contour)
-            
-            # Filter by area again after merging
-            if area < self.min_blob_area or area > self.max_blob_area:
-                continue
-            
-            # Get bounding rectangle
-            x, y, w, h = cv2.boundingRect(contour)
-            
-            # Calculate blob centroid
-            M = cv2.moments(contour)
-            if M["m00"] == 0:
-                continue
+            if centroid_depth > 0 and not np.isnan(centroid_depth):
+                # Calculate 3D position
+                position_3d = self._pixel_to_3d_position(centroid_x, centroid_y, centroid_depth)
                 
-            centroid_x = int(M["m10"] / M["m00"])
-            centroid_y = int(M["m01"] / M["m00"])
-            
-            # Get depth at centroid
-            if 0 <= centroid_y < depth_frame.shape[0] and 0 <= centroid_x < depth_frame.shape[1]:
-                centroid_depth = depth_frame[centroid_y, centroid_x]
+                # Determine detection zone based on depth
+                zone, zone_confidence = self._calculate_detection_confidence(centroid_depth)
                 
-                # Skip if invalid depth
-                if np.isnan(centroid_depth) or centroid_depth <= 0:
-                    continue
+                # Enhanced detection with depth
+                enhanced_detection = {
+                    **detection,
+                    'position_3d': position_3d,
+                    'depth': centroid_depth,
+                    'zone': zone,
+                    'zone_confidence': zone_confidence,
+                    'method': 'yolo+depth'
+                }
+                enhanced_detections.append(enhanced_detection)
             else:
-                continue
-            
-            # More flexible aspect ratio validation
-            aspect_ratio = h / w if w > 0 else 0
-            
-            # Much more flexible aspect ratio range
-            if aspect_ratio < 0.2 or aspect_ratio > 10.0:
-                continue
-            
-            # Estimate person height in 3D space
-            person_height_pixels = h
-            estimated_height = self._pixel_height_to_meters(person_height_pixels, centroid_depth)
-            
-            # More flexible height validation
-            if estimated_height < self.min_height or estimated_height > self.max_height:
-                continue
-            
-            # Calculate 3D position
-            position_3d = self._pixel_to_3d_position(centroid_x, centroid_y, centroid_depth)
-            
-            # Determine detection zone and confidence
-            zone, confidence = self._calculate_detection_confidence(centroid_depth)
-            
-            # Create blob detection result
-            blob = {
-                'centroid': (centroid_x, centroid_y),
-                'position_3d': position_3d,
-                'bounding_box': (x, y, w, h),
-                'area': area,
-                'aspect_ratio': aspect_ratio,
-                'estimated_height': estimated_height,
-                'depth': centroid_depth,
-                'confidence': confidence,
-                'zone': zone,
-                'contour': contour,
-                'detection_method': 'merged' if len(filtered_contours) > len(merged_contours) else 'blob'
-            }
-            
-            person_blobs.append(blob)
+                # Keep RGB-only detection but mark as low confidence
+                enhanced_detection = {
+                    **detection,
+                    'position_3d': (0, 0, 0),
+                    'depth': 0,
+                    'zone': 'low',
+                    'zone_confidence': 0.3,
+                    'method': 'yolo'
+                }
+                enhanced_detections.append(enhanced_detection)
         
-        return person_blobs
+        return enhanced_detections
     
-    def _pixel_height_to_meters(self, pixel_height: int, depth_meters: float) -> float:
-        """Convert pixel height to estimated real-world height in meters."""
-        # Intel RealSense D455 vertical FOV is approximately 58 degrees
-        vertical_fov_rad = np.radians(58)
-        
-        # Height of field of view at given depth
-        fov_height_at_depth = 2 * depth_meters * np.tan(vertical_fov_rad / 2)
-        
-        # Assume 480 pixels in vertical direction
-        pixels_per_meter = 480 / fov_height_at_depth
-        
-        height_meters = pixel_height / pixels_per_meter
-        
-        return height_meters
+    def _get_robust_depth(self, depth_frame: np.ndarray, x: int, y: int, w: int, h: int) -> float:
+        """Get robust depth estimate from detection bounding box."""
+        try:
+            # Sample the center 50% of the bounding box
+            margin_x = w // 4
+            margin_y = h // 4
+            
+            roi_x = x + margin_x
+            roi_y = y + margin_y
+            roi_w = w - 2 * margin_x
+            roi_h = h - 2 * margin_y
+            
+            # Ensure ROI is within bounds
+            roi_x = max(0, roi_x)
+            roi_y = max(0, roi_y)
+            roi_w = max(1, min(roi_w, depth_frame.shape[1] - roi_x))
+            roi_h = max(1, min(roi_h, depth_frame.shape[0] - roi_y))
+            
+            # Extract region of interest
+            roi = depth_frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w]
+            valid_depths = roi[~np.isnan(roi) & (roi > 0) & (roi < 15.0)]
+            
+            if len(valid_depths) > 10:
+                # Use 25th percentile to avoid background pixels
+                return np.percentile(valid_depths, 25)
+            else:
+                # Fallback: try center pixel
+                center_y = y + h // 2
+                center_x = x + w // 2
+                if (0 <= center_y < depth_frame.shape[0] and 
+                    0 <= center_x < depth_frame.shape[1]):
+                    center_depth = depth_frame[center_y, center_x]
+                    if not np.isnan(center_depth) and center_depth > 0:
+                        return center_depth
+                
+                return 0.0
+        except Exception as e:
+            self.logger.warning(f"Depth calculation failed: {e}")
+            return 0.0
     
     def _pixel_to_3d_position(self, pixel_x: int, pixel_y: int, depth_meters: float) -> Tuple[float, float, float]:
         """Convert pixel coordinates and depth to 3D position."""
-        # Intel RealSense D455 FOV: ~87° horizontal, ~58° vertical
         image_width = 640
         image_height = 480
         
-        h_fov = np.radians(87)
-        v_fov = np.radians(58)
+        h_fov = np.radians(87)  # Horizontal FOV
+        v_fov = np.radians(58)  # Vertical FOV
         
-        # Calculate angle from center for this pixel
         h_angle = (pixel_x - image_width/2) * (h_fov / image_width)
         v_angle = (pixel_y - image_height/2) * (v_fov / image_height)
         
-        # Convert to 3D coordinates (camera-centric)
         x = depth_meters * np.tan(h_angle)
         y = depth_meters * np.tan(v_angle)
         z = depth_meters
@@ -301,55 +229,62 @@ class ImprovedPersonDetector:
             if min_dist <= depth <= max_dist:
                 return zone_name.split('_')[0], zone_config['weight']
         
-        # Default to low confidence if outside all zones
         return 'low', 0.3
     
-    def detect_people(self, depth_frame: np.ndarray, timestamp: float) -> List[PersonDetection]:
-        """Main detection function - find all people in depth frame."""
+    def detect_people(self, depth_frame: np.ndarray, timestamp: float, color_frame: Optional[np.ndarray] = None) -> List[PersonDetection]:
+        """Main detection function - detect people using YOLO + depth."""
+        if color_frame is None:
+            self.logger.error("YOLO detector requires color frame")
+            return []
+        
         try:
-            # Preprocess depth frame
-            depth_processed = self.preprocess_depth_frame(depth_frame)
+            # Step 1: Detect people in RGB image using YOLO
+            rgb_detections = self.detect_people_rgb(color_frame)
             
-            # Create person detection mask
-            person_mask = self.create_person_mask(depth_processed)
+            if not rgb_detections:
+                self.logger.debug("No people detected by YOLO")
+                return []
             
-            # Find person blobs with merging
-            person_blobs = self.find_person_blobs(person_mask, depth_processed)
+            # Step 2: Add depth information to detections
+            enhanced_detections = self.add_depth_to_detections(rgb_detections, depth_frame)
             
-            # Convert to PersonDetection objects
-            detections = []
-            for i, blob in enumerate(person_blobs):
-                detection = PersonDetection(
+            # Step 3: Convert to PersonDetection objects
+            person_detections = []
+            for i, detection in enumerate(enhanced_detections):
+                person_detection = PersonDetection(
                     id=-1,  # Will be assigned by tracker
                     timestamp=timestamp,
-                    position_3d=blob['position_3d'],
-                    bounding_box=blob['bounding_box'],
-                    confidence=blob['confidence'],
-                    detection_method=blob['detection_method'],
-                    zone=blob['zone'],
-                    blob_area=blob['area']
+                    position_3d=detection['position_3d'],
+                    bounding_box=detection['bounding_box'],
+                    confidence=detection['zone_confidence'],
+                    detection_method=detection['method'],
+                    zone=detection['zone'],
+                    blob_area=detection['area']  # For compatibility
                 )
-                detections.append(detection)
+                person_detections.append(person_detection)
             
-            self.logger.debug(f"Detected {len(detections)} people at timestamp {timestamp}")
-            return detections
+            self.logger.debug(f"Final detection: {len(person_detections)} people")
+            return person_detections
             
         except Exception as e:
             self.logger.error(f"Person detection failed: {e}")
             return []
     
+    def create_person_mask(self, depth_frame: np.ndarray) -> np.ndarray:
+        """Create a dummy person mask for compatibility."""
+        return np.zeros((depth_frame.shape[0], depth_frame.shape[1]), dtype=np.uint8)
+    
+    def preprocess_depth_frame(self, depth_frame: np.ndarray) -> np.ndarray:
+        """Preprocess depth frame."""
+        depth_meters = depth_frame.astype(np.float32) / 1000.0
+        depth_meters[depth_meters == 0] = np.nan
+        return depth_meters
+    
     def visualize_detections(self, color_frame: np.ndarray, detections: List[PersonDetection], 
                            person_mask: Optional[np.ndarray] = None) -> np.ndarray:
-        """Create visualization of detections for debugging."""
+        """Create visualization of YOLO detections."""
         vis_frame = color_frame.copy()
         
-        # Draw detection mask if provided
-        if person_mask is not None:
-            # Overlay mask in blue
-            mask_colored = cv2.applyColorMap(person_mask, cv2.COLORMAP_WINTER)
-            vis_frame = cv2.addWeighted(vis_frame, 0.7, mask_colored, 0.3, 0)
-        
-        # Draw detections
         for detection in detections:
             x, y, w, h = detection.bounding_box
             
@@ -364,19 +299,72 @@ class ImprovedPersonDetector:
             # Draw bounding box
             cv2.rectangle(vis_frame, (x, y), (x + w, y + h), color, 2)
             
-            # Draw centroid
-            centroid_x = x + w // 2
-            centroid_y = y + h // 2
-            cv2.circle(vis_frame, (centroid_x, centroid_y), 5, color, -1)
+            # Draw center point
+            center_x = x + w // 2
+            center_y = y + h // 2
+            cv2.circle(vis_frame, (center_x, center_y), 5, color, -1)
             
-            # Add text with detection info
-            info_text = f"ID:{detection.id} {detection.zone} {detection.confidence:.2f}"
-            cv2.putText(vis_frame, info_text, (x, y - 10), 
+            # Add confidence text
+            conf_text = f"Person: {detection.confidence:.2f}"
+            cv2.putText(vis_frame, conf_text, (x, y - 10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
-            # Add method info
-            method_text = f"Method: {detection.detection_method}"
-            cv2.putText(vis_frame, method_text, (x, y + h + 15), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+            # Add depth info if available
+            if detection.position_3d[2] > 0:
+                depth_text = f"Depth: {detection.position_3d[2]:.1f}m"
+                cv2.putText(vis_frame, depth_text, (x, y + h + 15), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
         
         return vis_frame
+
+
+# Test the detector
+if __name__ == "__main__":
+    import time
+    import sys
+    import os
+    
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+    from camera.realsense_capture import RealSenseCapture
+    
+    test_config = {
+        'depth_width': 640, 'depth_height': 480, 'depth_fps': 30,
+        'color_width': 640, 'color_height': 480, 'color_fps': 30,
+        'align_streams': True, 'yolo_confidence_threshold': 0.5,
+        'camera_height': 2.5, 'camera_tilt': 30,
+        'detection_zones': {
+            'high_confidence': {'distance_range': (0.5, 8.0), 'weight': 1.0},
+            'medium_confidence': {'distance_range': (8.0, 15.0), 'weight': 0.7},
+            'low_confidence': {'distance_range': (15.0, 25.0), 'weight': 0.4}
+        }
+    }
+    
+    print("Testing YOLO Person Detection...")
+    camera = RealSenseCapture(test_config)
+    detector = PersonDetector(test_config)
+    
+    if camera.configure_camera() and camera.start_streaming():
+        print("Testing for 30 seconds...")
+        start_time = time.time()
+        frame_count = 0
+        
+        try:
+            while time.time() - start_time < 30:
+                depth, color = camera.get_frames()
+                if depth is not None and color is not None:
+                    detections = detector.detect_people(depth, time.time(), color)
+                    vis_frame = detector.visualize_detections(color, detections)
+                    
+                    print(f"Frame {frame_count}: {len(detections)} people")
+                    cv2.imshow('YOLO Detection', vis_frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        break
+                    frame_count += 1
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            print("Test interrupted")
+        finally:
+            camera.stop_streaming()
+            cv2.destroyAllWindows()
+    else:
+        print("Failed to initialize camera")
