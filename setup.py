@@ -10,7 +10,7 @@ setup(
     name="social-interaction-tracker",
     version="0.1.0",
     author="JS du Plooy",
-    author_email="your.email@nwu.ac.za",
+    author_email="40954129@mynwu.ac.za",
     description="Proximity-based social interaction detection using Intel RealSense depth cameras",
     long_description=long_description,
     long_description_content_type="text/markdown",
