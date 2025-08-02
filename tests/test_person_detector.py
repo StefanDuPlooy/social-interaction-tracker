@@ -13,7 +13,8 @@ import logging
 from pathlib import Path
 
 # Add src to path for imports
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+project_root = Path(__file__).parent.parent  # Go up from tests/ to project root
+sys.path.append(str(project_root / "src"))
 
 from camera.realsense_capture import RealSenseCapture
 from detection.person_detector import PersonDetector

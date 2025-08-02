@@ -3,6 +3,4 @@
 Detection module for person detection and tracking
 """
 
-from .person_detector import PersonDetector, PersonDetection
-
-__all__ = ['PersonDetector', 'PersonDetection']
+# Empty - let modules be imported directly
