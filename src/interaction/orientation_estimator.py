@@ -95,30 +95,42 @@ class OrientationEstimator:
             self.pose_model = None
     
     def estimate_orientations(self, tracked_people: List, depth_frame: np.ndarray, 
-                            color_frame: np.ndarray, timestamp: float) -> List[OrientationEstimate]:
-        """Estimate orientations for all tracked people."""
+                            color_frame: np.ndarray, timestamp: float) -> Tuple[List[OrientationEstimate], Dict]:
+        """Estimate orientations for all tracked people and return debug data."""
         orientations = []
+        debug_data = {}
         
         for person in tracked_people:
             if person.current_detection is None:
                 continue
             
-            orientation = self.estimate_person_orientation(
+            orientation, person_debug = self.estimate_person_orientation_with_debug(
                 person, depth_frame, color_frame, timestamp
             )
             
             if orientation:
                 orientations.append(orientation)
                 self._update_history(person.id, orientation)
+            
+            # Store debug data
+            debug_data[person.id] = person_debug
         
         self.total_estimates += len(orientations)
-        return orientations
+        return orientations, debug_data
     
-    def estimate_person_orientation(self, person, depth_frame: np.ndarray, 
-                                  color_frame: np.ndarray, timestamp: float) -> Optional[OrientationEstimate]:
-        """Estimate orientation for a single person using multiple methods."""
+    def estimate_person_orientation_with_debug(self, person, depth_frame: np.ndarray, 
+                                             color_frame: np.ndarray, timestamp: float) -> Tuple[Optional[OrientationEstimate], Dict]:
+        """Estimate orientation with detailed debug information."""
         person_id = person.id
         bbox = person.current_detection.bounding_box
+        
+        # Initialize debug data
+        debug_data = {
+            'skeleton_data': {},
+            'movement_data': {},
+            'depth_data': {},
+            'method_attempts': {}
+        }
         
         # Try methods in priority order
         methods_to_try = sorted(
@@ -131,26 +143,58 @@ class OrientationEstimator:
         for method_name, method_config in methods_to_try:
             try:
                 if method_name == 'skeleton_based':
-                    estimate = self._skeleton_based_orientation(person, color_frame, timestamp)
+                    estimate, skeleton_debug = self._skeleton_based_orientation_with_debug(person, color_frame, timestamp)
+                    debug_data['skeleton_data'] = skeleton_debug
                 elif method_name == 'movement_based':
-                    estimate = self._movement_based_orientation(person, timestamp)
+                    estimate, movement_debug = self._movement_based_orientation_with_debug(person, timestamp)
+                    debug_data['movement_data'] = movement_debug
                 elif method_name == 'depth_gradient':
-                    estimate = self._depth_gradient_orientation(person, depth_frame, timestamp)
+                    estimate, depth_debug = self._depth_gradient_orientation_with_debug(person, depth_frame, timestamp)
+                    debug_data['depth_data'] = depth_debug
                 else:
                     continue
                 
+                # Record method attempt
                 if estimate and estimate.confidence >= method_config.get('confidence_threshold', 0.5):
                     estimates.append(estimate)
                     self.method_success_counts[method_name] += 1
+                    debug_data['method_attempts'][method_name] = {
+                        'success': True,
+                        'angle': estimate.orientation_angle,
+                        'confidence': estimate.confidence
+                    }
+                else:
+                    debug_data['method_attempts'][method_name] = {
+                        'success': False,
+                        'reason': 'Low confidence' if estimate else 'Detection failed'
+                    }
                     
             except Exception as e:
                 self.logger.debug(f"Method {method_name} failed for person {person_id}: {e}")
+                debug_data['method_attempts'][method_name] = {
+                    'success': False,
+                    'reason': f'Exception: {str(e)}'
+                }
         
         # Combine estimates if multiple methods succeeded
         if estimates:
-            return self._combine_orientation_estimates(estimates, timestamp)
+            final_orientation = self._combine_orientation_estimates(estimates, timestamp)
+            debug_data['final_result'] = {
+                'angle': final_orientation.orientation_angle,
+                'confidence': final_orientation.confidence,
+                'method': final_orientation.method,
+                'num_methods_combined': len(estimates)
+            }
+            return final_orientation, debug_data
         else:
-            return self._fallback_orientation(person, timestamp)
+            fallback = self._fallback_orientation(person, timestamp)
+            debug_data['final_result'] = {
+                'angle': fallback.orientation_angle if fallback else 0,
+                'confidence': fallback.confidence if fallback else 0,
+                'method': 'fallback',
+                'num_methods_combined': 0
+            }
+        return fallback, debug_data
     
     def _skeleton_based_orientation(self, person, color_frame: np.ndarray, 
                                   timestamp: float) -> Optional[OrientationEstimate]:

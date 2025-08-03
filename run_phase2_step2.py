@@ -24,6 +24,7 @@ from detection.person_detector import PersonDetector
 from detection.tracker import PersonTracker
 from interaction.proximity_analyzer import ProximityAnalyzer
 from interaction.orientation_estimator import OrientationEstimator
+from interaction.orientation_visualizer import EnhancedOrientationVisualizer
 from config.detection_config import PERSON_DETECTION, MOUNT_CONFIG, DETECTION_ZONES
 from config.tracking_config import TRACKING_PARAMETERS
 from config.proximity_config import CLASSROOM_PROXIMITY
@@ -409,7 +410,7 @@ def run_phase2_step2_test():
     }
     
     # Initialize components
-    logger.info("=== Testing Phase 2 Step 2: Orientation Detection ===")
+    logger.info("=== Testing Phase 2 Step 2: Enhanced Orientation Detection with Debug ===")
     
     camera = RealSenseCapture(config)
     processor = FrameProcessor(config)
@@ -417,28 +418,45 @@ def run_phase2_step2_test():
     tracker = PersonTracker(config)
     proximity_analyzer = ProximityAnalyzer(config)
     orientation_estimator = OrientationEstimator(config)
-    visualizer = OrientationVisualizer(config)
+    enhanced_visualizer = EnhancedOrientationVisualizer(config)
     
     if not (camera.configure_camera() and camera.start_streaming()):
         logger.error("Failed to initialize camera")
         return False
     
     logger.info("All components initialized successfully")
-    logger.info("Testing orientation detection...")
-    logger.info("Instructions for testing:")
-    logger.info("  - Face different directions to test orientation detection")
+    logger.info("Enhanced debugging features enabled:")
+    logger.info("  🔍 Skeleton keypoint visualization")
+    logger.info("  📍 Movement trail and direction vectors") 
+    logger.info("  📊 Depth gradient analysis visualization")
+    logger.info("  🎯 Method-by-method breakdown")
+    logger.info("  📈 Confidence scoring breakdown")
+    logger.info("  🔄 Real-time method comparison")
+    logger.info("")
+    logger.info("Testing instructions:")
+    logger.info("  - Face different directions to test skeleton detection")
     logger.info("  - Walk around to test movement-based orientation")
-    logger.info("  - Stand facing each other to test mutual orientations")
-    logger.info("  - Form small groups (2-3 people) to test F-formations")
+    logger.info("  - Stand at different distances for depth analysis")
+    logger.info("  - Press 'd' to toggle debug modes")
+    logger.info("  - Press 'c' to show method comparison view")
     
     # Create output directory
     output_dir = Path("data/test_sessions/phase2_step2")
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Test parameters
-    test_duration = 150  # 2.5 minutes
-    target_fps = 15
+    # Test parameters with debug modes
+    test_duration = 180  # 3 minutes for thorough testing
+    target_fps = 12  # Slightly lower for debug processing
     frame_interval = 1.0 / target_fps
+    
+    # Debug mode settings
+    debug_modes = {
+        'show_skeleton': True,
+        'show_movement': True, 
+        'show_depth': True,
+        'show_method_comparison': False,
+        'show_confidence_breakdown': True
+    }
     
     # Statistics tracking
     stats = {
@@ -478,8 +496,8 @@ def run_phase2_step2_test():
             # Proximity analysis
             proximity_events = proximity_analyzer.analyze_frame(tracked_people, timestamp)
             
-            # Orientation estimation
-            orientations = orientation_estimator.estimate_orientations(
+            # Orientation estimation with debug data
+            orientations, debug_data = orientation_estimator.estimate_orientations(
                 tracked_people, depth, color, timestamp
             )
             
@@ -508,9 +526,26 @@ def run_phase2_step2_test():
             # Get orientation statistics
             stats['orientation_stats'] = orientation_estimator.get_orientation_statistics()
             
-            # Create visualizations
-            vis_frame = visualizer.visualize_orientations(
-                color, tracked_people, orientations, mutual_orientations, proximity_events, stats
+            # Create enhanced debug visualizations
+            if debug_modes['show_method_comparison'] and orientations:
+                # Show method comparison for first person
+                primary_person = orientations[0]
+                person_debug = debug_data.get(primary_person.person_id, {})
+                
+                # Create comparison view
+                comparison_view = enhanced_visualizer.create_method_comparison_view(
+                    color, primary_person.person_id,
+                    person_debug.get('skeleton_data', {}),
+                    person_debug.get('movement_data', {}), 
+                    person_debug.get('depth_data', {}),
+                    person_debug.get('final_result', {})
+                )
+                
+                cv2.imshow('Method Comparison', comparison_view)
+            
+            # Main debug visualization
+            vis_frame = enhanced_visualizer.visualize_with_debug(
+                color, tracked_people, orientations, debug_data
             )
             
             dashboard = create_orientation_dashboard(orientations, mutual_orientations, stats)
@@ -530,17 +565,30 @@ def run_phase2_step2_test():
             # Display
             cv2.imshow('Phase 2 Step 2: Orientation Detection', combined_vis)
             
-            # Handle key press
+            # Handle key press with debug controls
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
+            elif key == ord('d'):
+                # Toggle debug modes
+                debug_modes['show_skeleton'] = not debug_modes['show_skeleton']
+                debug_modes['show_movement'] = not debug_modes['show_movement']
+                debug_modes['show_depth'] = not debug_modes['show_depth']
+                logger.info(f"Debug modes toggled: skeleton={debug_modes['show_skeleton']}, "
+                           f"movement={debug_modes['show_movement']}, depth={debug_modes['show_depth']}")
+            elif key == ord('c'):
+                # Toggle method comparison view
+                debug_modes['show_method_comparison'] = not debug_modes['show_method_comparison']
+                logger.info(f"Method comparison view: {debug_modes['show_method_comparison']}")
+                if not debug_modes['show_method_comparison']:
+                    cv2.destroyWindow('Method Comparison')
             elif key == ord('s'):
-                # Save current state
+                # Save current state with debug data
                 timestamp_str = f"{timestamp:.3f}".replace('.', '_')
-                cv2.imwrite(str(output_dir / f"orientation_{timestamp_str}.png"), combined_vis)
+                cv2.imwrite(str(output_dir / f"orientation_debug_{timestamp_str}.png"), combined_vis)
                 
-                # Save orientation data
-                orientation_data = {
+                # Save detailed debug data
+                debug_export = {
                     'timestamp': timestamp,
                     'orientations': [
                         {
@@ -554,6 +602,7 @@ def run_phase2_step2_test():
                         }
                         for o in orientations
                     ],
+                    'debug_data': debug_data,
                     'mutual_orientations': [
                         {
                             'person1_id': m.person1_id,
@@ -561,18 +610,16 @@ def run_phase2_step2_test():
                             'mutual_facing_score': m.mutual_facing_score,
                             'in_f_formation': m.in_f_formation,
                             'group_coherence': m.group_coherence,
-                            'person1_to_person2_angle': m.person1_to_person2_angle,
-                            'person2_to_person1_angle': m.person2_to_person1_angle,
                         }
                         for m in mutual_orientations
                     ],
                     'statistics': stats
                 }
                 
-                with open(output_dir / f"orientation_data_{timestamp_str}.json", 'w') as f:
-                    json.dump(orientation_data, f, indent=2)
+                with open(output_dir / f"debug_data_{timestamp_str}.json", 'w') as f:
+                    json.dump(debug_export, f, indent=2)
                 
-                logger.info(f"Saved orientation analysis at frame {stats['total_frames']}")
+                logger.info(f"Saved detailed debug data at frame {stats['total_frames']}")
                 
             elif key == ord('r'):
                 # Reset analyzers
@@ -583,17 +630,25 @@ def run_phase2_step2_test():
             
             last_frame_time = current_time
             
-            # Periodic logging
+            # Periodic logging with debug info
             if stats['total_frames'] % 50 == 0 and stats['total_frames'] > 0:
                 active_orientations = len(orientations)
                 mutual_facing = sum(1 for m in mutual_orientations if m.mutual_facing_score > 0.5)
                 avg_processing_time = np.mean(stats['processing_times'][-50:])
                 fps = 1.0 / max(avg_processing_time, 0.001)
                 
-                logger.info(f"Frame {stats['total_frames']}: "
-                           f"{active_orientations} orientations, "
-                           f"{mutual_facing} mutual facing pairs, "
-                           f"FPS: {fps:.1f}")
+                # Debug breakdown
+                if orientations:
+                    method_breakdown = {}
+                    for o in orientations:
+                        method_breakdown[o.method] = method_breakdown.get(o.method, 0) + 1
+                    
+                    method_str = ", ".join([f"{k}:{v}" for k, v in method_breakdown.items()])
+                    logger.info(f"Frame {stats['total_frames']}: "
+                               f"{active_orientations} orientations ({method_str}), "
+                               f"{mutual_facing} mutual facing, FPS: {fps:.1f}")
+                else:
+                    logger.info(f"Frame {stats['total_frames']}: No orientations detected, FPS: {fps:.1f}")
     
     except KeyboardInterrupt:
         logger.info("Test interrupted by user")
@@ -602,10 +657,10 @@ def run_phase2_step2_test():
         camera.stop_streaming()
         cv2.destroyAllWindows()
     
-    # Final analysis and validation
+    # Enhanced final analysis
     final_orientation_stats = orientation_estimator.get_orientation_statistics()
     
-    logger.info("=== Phase 2 Step 2 Test Results ===")
+    logger.info("=== Phase 2 Step 2 Enhanced Test Results ===")
     logger.info(f"Total frames processed: {stats['total_frames']}")
     logger.info(f"Frames with orientations: {stats['frames_with_orientations']}")
     logger.info(f"Max simultaneous orientations: {stats['max_simultaneous_orientations']}")
@@ -617,56 +672,85 @@ def run_phase2_step2_test():
         logger.info(f"Average processing time: {avg_processing_time:.3f}s")
         logger.info(f"Effective FPS: {1/avg_processing_time:.1f}")
     
-    # Orientation-specific results
-    logger.info(f"\n=== Orientation Detection Results ===")
+    # Enhanced method analysis
+    logger.info(f"\n=== Detailed Method Analysis ===")
     method_counts = final_orientation_stats.get('method_success_counts', {})
+    total_attempts = sum(method_counts.values())
+    
     for method, count in method_counts.items():
-        logger.info(f"{method.title()} method successes: {count}")
+        percentage = (count / total_attempts * 100) if total_attempts > 0 else 0
+        logger.info(f"{method.title()} method: {count} successes ({percentage:.1f}%)")
     
     avg_confidences = final_orientation_stats.get('avg_confidence_by_method', {})
     for method, confidence in avg_confidences.items():
         logger.info(f"{method.title()} average confidence: {confidence:.2f}")
     
-    # Validation criteria
-    logger.info("\n=== Phase 2 Step 2 Validation ===")
+    # Debug insights
+    logger.info(f"\n=== Debug Insights ===")
+    logger.info("Key findings from debug analysis:")
+    
+    if method_counts.get('skeleton', 0) > 0:
+        logger.info("✓ Skeleton detection working - keypoints visible")
+    else:
+        logger.info("⚠️ Skeleton detection issues - check YOLO pose model")
+    
+    if method_counts.get('movement', 0) > 0:
+        logger.info("✓ Movement-based orientation working")
+    else:
+        logger.info("ℹ️ Limited movement detected - people may be stationary")
+    
+    if method_counts.get('depth_gradient', 0) > 0:
+        logger.info("✓ Depth gradient analysis working")
+    else:
+        logger.info("ℹ️ Depth gradients insufficient - may need closer positioning")
+    
+    # Enhanced validation criteria
+    logger.info("\n=== Enhanced Phase 2 Step 2 Validation ===")
     
     success_criteria = {
         'orientation_detection_works': stats['frames_with_orientations'] > 0,
         'multiple_methods_work': len([c for c in method_counts.values() if c > 0]) >= 2,
+        'skeleton_method_works': method_counts.get('skeleton', 0) > 0,
+        'movement_method_works': method_counts.get('movement', 0) > 0,
         'mutual_orientation_works': stats['mutual_orientations_detected'] > 0,
         'performance_good': np.mean(stats['processing_times']) < 0.15 if stats['processing_times'] else False,
         'real_time_capable': (1/np.mean(stats['processing_times']) if stats['processing_times'] else 0) > 8,
         'confidence_reasonable': any(c > 0.5 for c in avg_confidences.values()) if avg_confidences else False,
+        'method_diversity': len([c for c in method_counts.values() if c > 0]) >= 1,
     }
     
-    logger.info(f"✓ Orientation detection functionality: {'PASS' if success_criteria['orientation_detection_works'] else 'FAIL'}")
+    logger.info(f"✓ Basic orientation detection: {'PASS' if success_criteria['orientation_detection_works'] else 'FAIL'}")
     logger.info(f"✓ Multiple methods working: {'PASS' if success_criteria['multiple_methods_work'] else 'FAIL'}")
+    logger.info(f"✓ Skeleton method functional: {'PASS' if success_criteria['skeleton_method_works'] else 'FAIL'}")
+    logger.info(f"✓ Movement method functional: {'PASS' if success_criteria['movement_method_works'] else 'FAIL'}")
     logger.info(f"✓ Mutual orientation analysis: {'PASS' if success_criteria['mutual_orientation_works'] else 'FAIL'}")
     logger.info(f"✓ Performance (>8 FPS): {'PASS' if success_criteria['real_time_capable'] else 'FAIL'}")
     logger.info(f"✓ Confidence levels reasonable: {'PASS' if success_criteria['confidence_reasonable'] else 'FAIL'}")
     
     overall_success = all(success_criteria.values())
-    logger.info(f"\n🎯 PHASE 2 STEP 2 OVERALL: {'SUCCESS' if overall_success else 'NEEDS WORK'}")
+    logger.info(f"\n🎯 PHASE 2 STEP 2 ENHANCED OVERALL: {'SUCCESS' if overall_success else 'NEEDS WORK'}")
     
     if overall_success:
-        logger.info("✅ Ready for Phase 2 Step 3: Combined Proximity + Orientation Interaction Detection!")
-        logger.info("Next steps:")
+        logger.info("✅ Enhanced orientation detection is working excellently!")
+        logger.info("🔍 Debug features revealed detailed method performance")
+        logger.info("Ready for Phase 2 Step 3: Combined Proximity + Orientation!")
+        logger.info("\nNext steps:")
         logger.info("  - Combine proximity and orientation for robust interaction detection")
-        logger.info("  - Implement temporal validation and interaction inference")
+        logger.info("  - Implement temporal validation and interaction inference")  
         logger.info("  - Create comprehensive social network graphs")
     else:
-        logger.info("⚠️ Recommendations:")
-        if not success_criteria['orientation_detection_works']:
-            logger.info("  - Check YOLO pose model installation")
-            logger.info("  - Verify depth frame processing")
-        if not success_criteria['multiple_methods_work']:
-            logger.info("  - Tune method parameters and thresholds")
+        logger.info("⚠️ Debug-informed recommendations:")
+        if not success_criteria['skeleton_method_works']:
+            logger.info("  - Install/check YOLO pose model: pip install ultralytics")
+            logger.info("  - Ensure good lighting for skeleton detection")
+        if not success_criteria['movement_method_works']:
+            logger.info("  - Test with more movement - walk around during testing")
         if not success_criteria['performance_good']:
-            logger.info("  - Optimize orientation calculation algorithms")
+            logger.info("  - Consider reducing debug visualization for better performance")
         if not success_criteria['confidence_reasonable']:
-            logger.info("  - Adjust confidence scoring parameters")
+            logger.info("  - Adjust confidence thresholds in orientation_config.py")
     
-    # Save final report
+    # Save enhanced report with debug data
     report = {
         'timestamp': time.time(),
         'test_duration': test_duration,
@@ -674,12 +758,16 @@ def run_phase2_step2_test():
         'orientation_statistics': final_orientation_stats,
         'success_criteria': success_criteria,
         'overall_success': overall_success,
+        'debug_modes_used': debug_modes,
+        'method_breakdown': method_counts,
+        'confidence_breakdown': avg_confidences,
     }
     
-    with open(output_dir / "phase2_step2_report.json", 'w') as f:
+    with open(output_dir / "phase2_step2_enhanced_report.json", 'w') as f:
         json.dump(report, f, indent=2)
     
-    logger.info(f"\nDetailed report saved to: {output_dir / 'phase2_step2_report.json'}")
+    logger.info(f"\nEnhanced report with debug data saved to: {output_dir / 'phase2_step2_enhanced_report.json'}")
+    logger.info("🔍 Check saved debug JSON files for detailed method analysis")
     
     return overall_success
 

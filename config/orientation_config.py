@@ -100,7 +100,23 @@ MUTUAL_ORIENTATION = {
     'group_coherence_threshold': 0.6,
 }
 
-# Real-time Processing Parameters
+# Debug Visualization Settings
+DEBUG_VISUALIZATION = {
+    'show_skeleton_keypoints': True,
+    'show_movement_vectors': True,
+    'show_depth_analysis': True,
+    'show_method_breakdown': True,
+    'show_confidence_breakdown': True,
+    'keypoint_size': 4,
+    'vector_thickness': 2,
+    'text_size': 0.4,
+    'debug_text_color': (255, 255, 255),
+    'error_text_color': (0, 0, 255),
+    'success_text_color': (0, 255, 0),
+    'warning_text_color': (0, 255, 255),
+}
+
+# Enhanced Real-time Processing Parameters
 PROCESSING_PARAMS = {
     'orientation_update_interval': 0.1,  # seconds between orientation updates
     'batch_processing_size': 10,  # Process N people at once
@@ -108,6 +124,8 @@ PROCESSING_PARAMS = {
     'debug_visualization': True,
     'save_orientation_history': True,
     'history_retention_seconds': 300,  # 5 minutes
+    'detailed_debug_logging': True,  # Enable detailed debug data collection
+    'method_performance_tracking': True,  # Track per-method performance
 }
 
 # Visualization Settings
