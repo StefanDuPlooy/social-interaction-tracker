@@ -287,6 +287,212 @@ class SinglePanelLayout:
         cv2.putText(panel, "CONTROLS: D=Debug, S=Save, Q=Quit", (15, y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
         
+        # Add these methods to your existing SinglePanelLayout class in run_phase2_step2.py
+
+    def create_stats_panel(self, orientations, mutual_orientations, stats):
+        """Create statistics panel."""
+        panel = np.zeros((self.stats_height, self.panel_width, 3), dtype=np.uint8)
+        panel[:] = (30, 30, 30)  # Dark gray background
+        
+        # Add border
+        cv2.rectangle(panel, (5, 5), (self.panel_width-5, self.stats_height-5), (60, 60, 60), 2)
+        
+        y = 30
+        line_height = 22
+        
+        # Title
+        cv2.putText(panel, "ORIENTATION ANALYSIS", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        y += 45
+        
+        # Current status with icons
+        cv2.putText(panel, "STATUS", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+        y += 30
+        
+        # Active people
+        cv2.circle(panel, (25, y-5), 4, (0, 255, 0), -1)
+        cv2.putText(panel, f"People Detected: {len(orientations)}", (40, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        y += line_height
+        
+        # Mutual orientations
+        cv2.circle(panel, (25, y-5), 4, (255, 255, 0), -1)
+        cv2.putText(panel, f"Mutual Orientations: {len(mutual_orientations)}", (40, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        y += line_height
+        
+        # F-formations
+        f_formations = sum(1 for m in mutual_orientations if m.in_f_formation)
+        cv2.circle(panel, (25, y-5), 4, (255, 0, 255), -1)
+        cv2.putText(panel, f"F-Formations: {f_formations}", (40, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+        y += 35
+        
+        # Individual orientations
+        cv2.putText(panel, "ORIENTATIONS", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+        y += 30
+        
+        method_colors = {
+            'skeleton': (0, 255, 0),
+            'movement': (255, 255, 0),
+            'depth_gradient': (255, 100, 0),
+            'combined': (0, 255, 255),
+            'fallback_last_known': (150, 150, 150)
+        }
+        
+        for i, orientation in enumerate(orientations[:6]):  # Show max 6
+            color = method_colors.get(orientation.method, (255, 255, 255))
+            
+            # Method indicator
+            cv2.circle(panel, (25, y-5), 4, color, -1)
+            
+            # Person info
+            text = f"P{orientation.person_id}: {orientation.orientation_angle:.0f}°"
+            cv2.putText(panel, text, (40, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+            y += 16
+            
+            # Confidence and method
+            conf_text = f"  {orientation.method} (conf: {orientation.confidence:.2f})"
+            cv2.putText(panel, conf_text, (40, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+            y += 20
+        
+        # Method performance section
+        y += 20
+        cv2.putText(panel, "METHOD PERFORMANCE", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+        y += 30
+        
+        orientation_stats = stats.get('orientation_stats', {})
+        method_counts = orientation_stats.get('method_success_counts', {})
+        
+        for method, count in method_counts.items():
+            if count > 0:  # Only show methods with successes
+                color = method_colors.get(method, (255, 255, 255))
+                # Method indicator
+                cv2.rectangle(panel, (20, y-8), (30, y-2), color, -1)
+                cv2.putText(panel, f"{method.replace('_', ' ').title()}: {count}", (40, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                y += line_height
+        
+        # Performance metrics
+        y += 25
+        cv2.putText(panel, "PERFORMANCE", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+        y += 30
+        
+        total_frames = stats.get('total_frames', 0)
+        frames_with_orientations = stats.get('frames_with_orientations', 0)
+        
+        if total_frames > 0:
+            success_rate = (frames_with_orientations / total_frames) * 100
+            cv2.putText(panel, f"Success Rate: {success_rate:.1f}%", (25, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            y += line_height
+        
+        if 'processing_times' in stats and stats['processing_times']:
+            avg_time = np.mean(stats['processing_times'][-10:])
+            fps = 1.0 / max(avg_time, 0.001)
+            cv2.putText(panel, f"FPS: {fps:.1f}", (25, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+            y += line_height
+        
+        return panel
+    
+    def create_debug_panel(self, debug_data):
+        """Create debug information panel."""
+        panel = np.zeros((self.debug_height, self.panel_width, 3), dtype=np.uint8)
+        panel[:] = (20, 20, 40)  # Dark blue background
+        
+        # Add border
+        cv2.rectangle(panel, (5, 5), (self.panel_width-5, self.debug_height-5), (60, 60, 60), 2)
+        
+        y = 30
+        line_height = 18
+        
+        # Title
+        cv2.putText(panel, "DEBUG INFO", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        y += 35
+        
+        # Legend first
+        cv2.putText(panel, "LEGEND", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+        y += 25
+        
+        legend_items = [
+            ("Green circles", "Skeleton keypoints", (0, 255, 0)),
+            ("Green arrows", "Skeleton orientation", (0, 255, 0)),
+            ("Yellow arrows", "Movement orientation", (255, 255, 0)),
+            ("Red arrows", "Depth gradient", (255, 100, 0)),
+            ("Cyan arrows", "Combined estimate", (0, 255, 255))
+        ]
+        
+        for item, desc, color in legend_items:
+            cv2.circle(panel, (25, y-5), 3, color, -1)
+            cv2.putText(panel, desc, (35, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+            y += 16
+        
+        y += 15
+        
+        # Show debug data for each person
+        for person_id, person_debug in debug_data.items():
+            if y > self.debug_height - 100:  # Prevent overflow
+                break
+                
+            cv2.putText(panel, f"Person {person_id}:", (15, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 100), 1)
+            y += 22
+            
+            # Skeleton debug info
+            skeleton_data = person_debug.get('skeleton_data', {})
+            if skeleton_data:
+                visible_kpts = skeleton_data.get('visible_keypoints_count', 0)
+                total_kpts = skeleton_data.get('total_keypoints', 17)
+                cv2.putText(panel, f"  Keypoints: {visible_kpts}/{total_kpts}", (25, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1)
+                y += line_height
+                
+                # Key points status
+                key_points = skeleton_data.get('key_points', {})
+                if key_points:
+                    available_points = [k for k, v in key_points.items() if v]
+                    cv2.putText(panel, f"  Available: {', '.join(available_points)}", (25, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+                    y += line_height
+                
+                issues = skeleton_data.get('issues', [])
+                if issues:
+                    cv2.putText(panel, f"  Issues: {', '.join(issues[:2])}", (25, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 100, 100), 1)
+                    y += line_height
+            
+            # Method attempts summary
+            method_attempts = person_debug.get('method_attempts', {})
+            successful_methods = [m for m, r in method_attempts.items() if r.get('success', False)]
+            failed_methods = [m for m, r in method_attempts.items() if not r.get('success', False)]
+            
+            if successful_methods:
+                cv2.putText(panel, f"  Working: {', '.join(successful_methods)}", (25, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 0), 1)
+                y += line_height
+            
+            if failed_methods:
+                cv2.putText(panel, f"  Failed: {', '.join(failed_methods)}", (25, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 100, 100), 1)
+                y += line_height
+            
+            y += 10  # Space between people
+        
+        # Controls at bottom
+        y = self.debug_height - 60
+        cv2.putText(panel, "CONTROLS: D=Debug, S=Save, Q=Quit", (15, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+        
         return panel
 
 class OrientationVisualizer:
@@ -671,7 +877,6 @@ def run_phase2_step2_test():
     proximity_analyzer = ProximityAnalyzer(config)
     orientation_estimator = OrientationEstimator(config)
     enhanced_visualizer = EnhancedOrientationVisualizer(config)
-    fullscreen_layout = SimpleFullScreenLayout()
     
     if not (camera.configure_camera() and camera.start_streaming()):
         logger.error("Failed to initialize camera")

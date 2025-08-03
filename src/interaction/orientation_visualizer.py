@@ -62,10 +62,7 @@ class EnhancedOrientationVisualizer:
             
             # Draw person with all debug information
             self._draw_person_debug_complete(debug_frame, person, orientation, person_debug)
-        
-        # Add debug legend
-        self._draw_debug_legend(debug_frame)
-        
+          
         return debug_frame
     
     def _draw_person_debug_complete(self, frame: np.ndarray, person, orientation, debug_data: Dict):
