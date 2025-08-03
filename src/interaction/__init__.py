@@ -1,6 +1,9 @@
 # src/interaction/__init__.py
 """
 Interaction module for proximity analysis and interaction detection
+Phase 2 implementation: proximity, orientation, and interaction inference
 """
 
-# Will be populated in Phase 2
+from .proximity_analyzer import ProximityAnalyzer, ProximityEvent
+
+__all__ = ['ProximityAnalyzer', 'ProximityEvent']
