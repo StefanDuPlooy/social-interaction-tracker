@@ -37,6 +37,224 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class SimpleFullScreenLayout:
+    """Simple full-screen layout for better visualization."""
+    
+    def __init__(self):
+        """Initialize with screen-friendly dimensions."""
+        # Simple 2x2 grid layout
+        self.window_width = 960   # Half of 1920
+        self.window_height = 540  # Half of 1080
+        
+        self.setup_windows()
+    
+    def setup_windows(self):
+        """Setup 4 windows in a 2x2 grid."""
+        # Main video window (top-left)
+        cv2.namedWindow('Orientation Detection', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Orientation Detection', self.window_width, self.window_height)
+        cv2.moveWindow('Orientation Detection', 0, 0)
+        
+        # Dashboard window (top-right) 
+        cv2.namedWindow('Statistics Dashboard', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Statistics Dashboard', self.window_width, self.window_height)
+        cv2.moveWindow('Statistics Dashboard', self.window_width, 0)
+        
+        # Debug window (bottom-left)
+        cv2.namedWindow('Debug Information', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Debug Information', self.window_width, self.window_height)
+        cv2.moveWindow('Debug Information', 0, self.window_height)
+        
+        # Method comparison window (bottom-right)
+        cv2.namedWindow('Method Comparison', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Method Comparison', self.window_width, self.window_height)
+        cv2.moveWindow('Method Comparison', self.window_width, self.window_height)
+    
+    def create_dashboard(self, orientations, mutual_orientations, stats):
+        """Create a simple dashboard."""
+        dashboard = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
+        dashboard[:] = (40, 40, 40)  # Dark background
+        
+        y = 40
+        line_height = 30
+        
+        # Title
+        cv2.putText(dashboard, "ORIENTATION STATISTICS", (20, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        y += 60
+        
+        # Current status
+        cv2.putText(dashboard, f"Active People: {len(orientations)}", (20, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        y += line_height
+        
+        cv2.putText(dashboard, f"Mutual Orientations: {len(mutual_orientations)}", (20, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        y += line_height
+        
+        # Individual orientations
+        for i, orientation in enumerate(orientations[:8]):  # Show max 8
+            method_colors = {
+                'skeleton': (0, 255, 0),
+                'movement': (255, 255, 0),
+                'depth_gradient': (255, 100, 0),
+                'combined': (0, 255, 255),
+                'fallback_last_known': (150, 150, 150)
+            }
+            color = method_colors.get(orientation.method, (255, 255, 255))
+            
+            text = f"P{orientation.person_id}: {orientation.orientation_angle:.0f}° ({orientation.method}, {orientation.confidence:.2f})"
+            cv2.putText(dashboard, text, (20, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            y += 25
+        
+        # Method statistics
+        y += 40
+        cv2.putText(dashboard, "METHOD PERFORMANCE:", (20, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (100, 255, 100), 2)
+        y += 40
+        
+        orientation_stats = stats.get('orientation_stats', {})
+        method_counts = orientation_stats.get('method_success_counts', {})
+        
+        for method, count in method_counts.items():
+            color = method_colors.get(method, (255, 255, 255))
+            cv2.putText(dashboard, f"{method}: {count} successes", (20, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            y += 25
+        
+        # Performance
+        total_frames = stats.get('total_frames', 0)
+        frames_with_orientations = stats.get('frames_with_orientations', 0)
+        
+        if total_frames > 0:
+            success_rate = (frames_with_orientations / total_frames) * 100
+            cv2.putText(dashboard, f"Success Rate: {success_rate:.1f}%", (20, y + 40),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+        
+        return dashboard
+    
+    def create_debug_panel(self, debug_data):
+        """Create a debug information panel."""
+        panel = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
+        panel[:] = (20, 20, 40)  # Dark blue background
+        
+        y = 40
+        
+        # Title
+        cv2.putText(panel, "DEBUG INFORMATION", (20, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        y += 60
+        
+        # Show debug data for each person
+        for person_id, person_debug in debug_data.items():
+            cv2.putText(panel, f"Person {person_id}:", (20, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 100), 2)
+            y += 35
+            
+            # Skeleton info
+            skeleton_data = person_debug.get('skeleton_data', {})
+            if skeleton_data:
+                visible_kpts = skeleton_data.get('visible_keypoints_count', 0)
+                total_kpts = skeleton_data.get('total_keypoints', 17)
+                cv2.putText(panel, f"  Keypoints: {visible_kpts}/{total_kpts}", (30, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                y += 25
+                
+                issues = skeleton_data.get('issues', [])
+                if issues:
+                    cv2.putText(panel, f"  Issues: {', '.join(issues[:3])}", (30, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 100, 100), 1)
+                    y += 25
+            
+            # Method attempts
+            method_attempts = person_debug.get('method_attempts', {})
+            for method, result in method_attempts.items():
+                success = "✓" if result.get('success', False) else "✗"
+                color = (0, 255, 0) if result.get('success', False) else (255, 100, 100)
+                cv2.putText(panel, f"  {success} {method}", (30, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                y += 25
+            
+            y += 20  # Space between people
+        
+        return panel
+    
+    def create_method_comparison(self, orientations, debug_data):
+        """Create method comparison panel."""
+        panel = np.zeros((self.window_height, self.window_width, 3), dtype=np.uint8)
+        panel[:] = (40, 20, 20)  # Dark red background
+        
+        y = 40
+        
+        # Title
+        cv2.putText(panel, "METHOD COMPARISON", (20, y),
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 255, 255), 2)
+        y += 60
+        
+        if orientations:
+            primary_person = orientations[0]
+            person_debug = debug_data.get(primary_person.person_id, {})
+            
+            cv2.putText(panel, f"Person {primary_person.person_id} Analysis:", (20, y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 100), 2)
+            y += 40
+            
+            # Method breakdown
+            skeleton_data = person_debug.get('skeleton_data', {})
+            if skeleton_data:
+                body_angle = skeleton_data.get('body_angle')
+                head_angle = skeleton_data.get('head_angle')
+                final_angle = skeleton_data.get('final_angle')
+                
+                if body_angle is not None:
+                    cv2.putText(panel, f"Body Angle: {body_angle:.1f}°", (30, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    y += 35
+                
+                if head_angle is not None:
+                    cv2.putText(panel, f"Head Angle: {head_angle:.1f}°", (30, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                    y += 35
+                
+                if final_angle is not None:
+                    cv2.putText(panel, f"Final: {final_angle:.1f}°", (30, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    y += 50
+            
+            # Key points status
+            key_points = skeleton_data.get('key_points', {})
+            if key_points:
+                cv2.putText(panel, "Key Points Status:", (30, y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                y += 30
+                
+                for point, available in key_points.items():
+                    status = "✓" if available else "✗"
+                    color = (0, 255, 0) if available else (255, 100, 100)
+                    cv2.putText(panel, f"  {status} {point.replace('_', ' ')}", (40, y),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                    y += 25
+        
+        return panel
+    
+    def display_all(self, vis_frame, orientations, mutual_orientations, stats, debug_data, show_method_comparison=True):
+        """Display all 4 windows."""
+        # Resize main video and display
+        main_resized = cv2.resize(vis_frame, (self.window_width, self.window_height))
+        cv2.imshow('Orientation Detection', main_resized)
+        
+        # Create and display other panels
+        dashboard = self.create_dashboard(orientations, mutual_orientations, stats)
+        cv2.imshow('Statistics Dashboard', dashboard)
+        
+        debug_panel = self.create_debug_panel(debug_data)
+        cv2.imshow('Debug Information', debug_panel)
+        
+        if show_method_comparison:
+            comparison_panel = self.create_method_comparison(orientations, debug_data)
+            cv2.imshow('Method Comparison', comparison_panel)
+
 class OrientationVisualizer:
     """Enhanced visualizer for orientation detection and mutual analysis."""
     
@@ -419,6 +637,7 @@ def run_phase2_step2_test():
     proximity_analyzer = ProximityAnalyzer(config)
     orientation_estimator = OrientationEstimator(config)
     enhanced_visualizer = EnhancedOrientationVisualizer(config)
+    fullscreen_layout = SimpleFullScreenLayout()
     
     if not (camera.configure_camera() and camera.start_streaming()):
         logger.error("Failed to initialize camera")
@@ -563,7 +782,10 @@ def run_phase2_step2_test():
             combined_vis[dashboard_y:dashboard_y + dashboard.shape[0], :dashboard.shape[1]] = dashboard
             
             # Display
-            cv2.imshow('Phase 2 Step 2: Orientation Detection', combined_vis)
+            fullscreen_layout.display_all(
+                vis_frame, orientations, mutual_orientations, stats, debug_data,
+                show_method_comparison=debug_modes.get('show_method_comparison', False)
+            )
             
             # Handle key press with debug controls
             key = cv2.waitKey(1) & 0xFF

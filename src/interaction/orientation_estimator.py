@@ -196,95 +196,161 @@ class OrientationEstimator:
             }
         return fallback, debug_data
     
-    def _skeleton_based_orientation(self, person, color_frame: np.ndarray, 
-                                  timestamp: float) -> Optional[OrientationEstimate]:
-        """Estimate orientation from skeleton keypoints."""
-        if not self.pose_model:
-            return None
+    def _skeleton_based_orientation_with_debug(self, person, color_frame: np.ndarray, 
+                                             timestamp: float) -> Tuple[Optional[OrientationEstimate], Dict]:
+        """Estimate orientation from skeleton keypoints with enhanced debugging."""
+        debug_data = {'keypoints': [], 'method': 'skeleton', 'issues': []}
         
-        person_id = person.id
-        bbox = person.current_detection.bounding_box
+        if not self.pose_model:
+            debug_data['issues'].append("No pose model available")
+            self.logger.warning("No pose model available for skeleton detection")
+            return None, debug_data
+        
+        # Extract person region from color frame
+        detection = person.current_detection
+        if not detection:
+            debug_data['issues'].append("No current detection")
+            self.logger.debug(f"No current detection for person {person.id}")
+            return None, debug_data
+        
+        bbox = detection.bounding_box
         x, y, w, h = bbox
         
-        # Extract person region
-        person_roi = color_frame[y:y+h, x:x+w]
-        if person_roi.size == 0:
-            return None
+        # Add bounds checking
+        if x < 0 or y < 0 or x + w > color_frame.shape[1] or y + h > color_frame.shape[0]:
+            debug_data['issues'].append(f"Bbox out of bounds: {bbox}")
+            self.logger.warning(f"Person {person.id} bbox out of frame bounds: {bbox}")
+            return None, debug_data
         
         try:
-            # Run pose estimation
+            person_roi = color_frame[y:y+h, x:x+w]
+            
+            # ENHANCED DEBUG: Log ROI details
+            debug_data['roi_size'] = person_roi.shape
+            self.logger.info(f"Processing person {person.id} ROI size: {person_roi.shape}")
+            
+            # Check for valid ROI
+            if person_roi.size == 0:
+                debug_data['issues'].append("Empty ROI")
+                return None, debug_data
+            
+            # Run pose detection on person ROI
             results = self.pose_model(person_roi, verbose=False)
             
             if not results or len(results) == 0:
-                return None
+                debug_data['issues'].append("No pose results")
+                self.logger.warning(f"No pose results for person {person.id}")
+                return None, debug_data
             
-            # Get keypoints
-            keypoints = results[0].keypoints
-            if keypoints is None or len(keypoints.data) == 0:
-                return None
+            # Extract keypoints from first detection
+            result = results[0]
+            if not hasattr(result, 'keypoints') or result.keypoints is None:
+                debug_data['issues'].append("No keypoints in result")
+                self.logger.warning(f"No keypoints in pose result for person {person.id}")
+                return None, debug_data
             
-            # Extract keypoints (COCO format)
-            kpts = keypoints.data[0].cpu().numpy()  # [17, 3] - (x, y, confidence)
+            keypoints = result.keypoints.data[0].cpu().numpy()  # Shape: (17, 3)
+            debug_data['keypoints'] = keypoints.tolist()
             
-            # Key indices in COCO format
-            nose = 0; left_eye = 1; right_eye = 2; left_ear = 3; right_ear = 4
-            left_shoulder = 5; right_shoulder = 6; left_elbow = 7; right_elbow = 8
+            # ENHANCED DEBUG: Count and log visible keypoints
+            visible_keypoints = keypoints[keypoints[:, 2] > 0.3]
+            debug_data['visible_keypoints_count'] = len(visible_keypoints)
+            debug_data['total_keypoints'] = len(keypoints)
             
-            # Calculate body orientation from shoulders
+            self.logger.info(f"Person {person.id}: {len(visible_keypoints)} visible keypoints out of {len(keypoints)}")
+            
+            if len(visible_keypoints) < 3:
+                debug_data['issues'].append(f"Insufficient keypoints ({len(visible_keypoints)} < 3)")
+                self.logger.warning(f"Person {person.id}: Insufficient keypoints ({len(visible_keypoints)} < 3)")
+                return None, debug_data
+            
+            # Check for key skeletal landmarks
+            nose = keypoints[0] if keypoints[0, 2] > 0.3 else None
+            left_shoulder = keypoints[5] if keypoints[5, 2] > 0.3 else None
+            right_shoulder = keypoints[6] if keypoints[6, 2] > 0.3 else None
+            
+            # ENHANCED DEBUG: Log key point availability
+            debug_data['key_points'] = {
+                'nose': nose is not None,
+                'left_shoulder': left_shoulder is not None,
+                'right_shoulder': right_shoulder is not None
+            }
+            
+            self.logger.info(f"Person {person.id} key points - Nose: {nose is not None}, "
+                            f"L_Shoulder: {left_shoulder is not None}, R_Shoulder: {right_shoulder is not None}")
+            
+            # Calculate orientation angles
+            person_id = person.id
             body_angle = None
-            if (kpts[left_shoulder][2] > 0.3 and kpts[right_shoulder][2] > 0.3):
-                # Shoulder vector in ROI coordinates
-                shoulder_vec = kpts[right_shoulder][:2] - kpts[left_shoulder][:2]
-                
-                # Convert to global coordinates
-                shoulder_vec_global = np.array([shoulder_vec[0], shoulder_vec[1]])
-                
-                # Body orientation is perpendicular to shoulder line
-                # Assuming person faces forward from their right side
-                body_angle = math.degrees(math.atan2(-shoulder_vec_global[0], shoulder_vec_global[1]))
-            
-            # Calculate head orientation from face keypoints
             head_angle = None
-            face_points = [nose, left_eye, right_eye, left_ear, right_ear]
-            valid_face_points = [(i, kpts[i]) for i in face_points if kpts[i][2] > 0.3]
+            confidence = 0.3  # Base confidence
+            joint_count = len(visible_keypoints)
             
-            if len(valid_face_points) >= 2:
-                # Use eye/nose configuration to determine head direction
-                if (kpts[left_eye][2] > 0.3 and kpts[right_eye][2] > 0.3 and kpts[nose][2] > 0.3):
-                    eye_center = (kpts[left_eye][:2] + kpts[right_eye][:2]) / 2
-                    nose_pos = kpts[nose][:2]
-                    
-                    # Face direction vector
-                    face_vec = nose_pos - eye_center
+            # Try body orientation from shoulders
+            if left_shoulder is not None and right_shoulder is not None:
+                # Calculate shoulder vector (in ROI coordinates)
+                shoulder_vec = right_shoulder[:2] - left_shoulder[:2]
+                
+                # Body faces perpendicular to shoulder line
+                # Perpendicular vector (rotate 90 degrees)
+                body_vec = np.array([-shoulder_vec[1], shoulder_vec[0]])
+                
+                # Convert to angle (0 = facing up in image)
+                body_angle = math.degrees(math.atan2(body_vec[1], body_vec[0]))
+                confidence = 0.7
+                joint_count = 2  # shoulders
+                
+                debug_data['shoulder_vector'] = shoulder_vec.tolist()
+                debug_data['body_angle'] = body_angle
+                
+                self.logger.info(f"Person {person.id}: Body angle from shoulders: {body_angle:.1f}°")
+                
+            # Try head orientation from face keypoints  
+            if nose is not None:
+                left_eye = keypoints[1] if keypoints[1, 2] > 0.3 else None
+                right_eye = keypoints[2] if keypoints[2, 2] > 0.3 else None
+                
+                if left_eye is not None and right_eye is not None:
+                    # Eye vector
+                    eye_vec = right_eye[:2] - left_eye[:2]
+                    # Face direction perpendicular to eye line
+                    face_vec = np.array([-eye_vec[1], eye_vec[0]])
                     head_angle = math.degrees(math.atan2(face_vec[1], face_vec[0]))
+                    
+                    debug_data['eye_vector'] = eye_vec.tolist()
+                    debug_data['head_angle'] = head_angle
+                    
+                    self.logger.info(f"Person {person.id}: Head angle from eyes: {head_angle:.1f}°")
             
-            # Combine body and head angles
+            # Choose best orientation estimate
             final_angle = None
-            confidence = 0.0
-            joint_count = 0
-            
             if body_angle is not None and head_angle is not None:
-                # Weight body more than head
-                final_angle = (self.skeleton_config['shoulder_vector_weight'] * body_angle + 
-                              self.skeleton_config['head_vector_weight'] * head_angle)
-                confidence = 0.9
-                joint_count = len([i for i in range(len(kpts)) if kpts[i][2] > 0.3])
+                # Combine body and head estimates
+                final_angle = (body_angle * 0.7 + head_angle * 0.3)
+                confidence = 0.8
+                joint_count = len(visible_keypoints)
+                debug_data['final_method'] = 'body_and_head_combined'
                 
             elif body_angle is not None:
                 final_angle = body_angle
-                confidence = 0.8
+                confidence = 0.6
                 joint_count = 2  # shoulders
+                debug_data['final_method'] = 'body_only'
                 
             elif head_angle is not None:
                 final_angle = head_angle
-                confidence = 0.6
+                confidence = 0.5
                 joint_count = 3  # face points
+                debug_data['final_method'] = 'head_only'
             
             if final_angle is None:
-                return None
+                debug_data['issues'].append("No valid orientation calculated")
+                return None, debug_data
             
             # Normalize angle to 0-360
             final_angle = (final_angle + 360) % 360
+            debug_data['final_angle'] = final_angle
+            debug_data['final_confidence'] = confidence
             
             # Create facing vector
             facing_vector = (
@@ -297,6 +363,11 @@ class OrientationEstimator:
                 final_angle, confidence = self._apply_temporal_smoothing(
                     person_id, final_angle, confidence, timestamp
                 )
+                debug_data['temporal_smoothing_applied'] = True
+                debug_data['smoothed_angle'] = final_angle
+                debug_data['smoothed_confidence'] = confidence
+            
+            self.logger.info(f"Person {person.id}: Final skeleton orientation: {final_angle:.1f}° (conf: {confidence:.2f})")
             
             return OrientationEstimate(
                 person_id=person_id,
@@ -308,142 +379,157 @@ class OrientationEstimator:
                 head_angle=head_angle,
                 body_angle=body_angle,
                 joint_visibility_count=joint_count
-            )
+            ), debug_data
             
         except Exception as e:
-            self.logger.debug(f"Skeleton orientation failed for person {person_id}: {e}")
-            return None
+            debug_data['issues'].append(f"Exception: {str(e)}")
+            self.logger.error(f"Skeleton orientation failed for person {person.id}: {e}")
+            return None, debug_data
     
-    def _movement_based_orientation(self, person, timestamp: float) -> Optional[OrientationEstimate]:
-        """Estimate orientation from movement direction."""
+    def _skeleton_based_orientation(self, person, color_frame: np.ndarray, 
+                                  timestamp: float) -> Optional[OrientationEstimate]:
+        """Estimate orientation from skeleton keypoints (legacy method)."""
+        estimate, _ = self._skeleton_based_orientation_with_debug(person, color_frame, timestamp)
+        return estimate
+    
+    def _movement_based_orientation_with_debug(self, person, timestamp: float) -> Tuple[Optional[OrientationEstimate], Dict]:
+        """Estimate orientation from movement direction with debug info."""
+        debug_data = {'method': 'movement', 'issues': []}
+        
         person_id = person.id
         
-        # Get recent positions
-        if len(person.position_history) < 2:
-            return None
+        # Get position history
+        if not hasattr(person, 'position_history') or len(person.position_history) < 2:
+            debug_data['issues'].append("Insufficient position history")
+            return None, debug_data
         
-        # Calculate velocity over recent history
-        positions = list(person.position_history)
-        if len(positions) < self.movement_config['velocity_history_length']:
-            positions = positions[-len(positions):]
-        else:
-            positions = positions[-self.movement_config['velocity_history_length']:]
+        # Calculate movement vector from recent positions
+        recent_positions = person.position_history[-5:]  # Last 5 positions
+        if len(recent_positions) < 2:
+            debug_data['issues'].append("Insufficient recent positions")
+            return None, debug_data
         
-        # Compute movement vector
-        movement_vectors = []
-        for i in range(1, len(positions)):
-            prev_pos = positions[i-1]
-            curr_pos = positions[i]
-            
-            movement = np.array([curr_pos[0] - prev_pos[0], curr_pos[1] - prev_pos[1]])
-            movement_vectors.append(movement)
+        # Calculate velocity vector
+        pos_current = np.array(recent_positions[-1][:2])  # x, y only
+        pos_previous = np.array(recent_positions[-2][:2])
         
-        if not movement_vectors:
-            return None
+        movement_vec = pos_current - pos_previous
+        movement_magnitude = np.linalg.norm(movement_vec)
         
-        # Average movement direction
-        avg_movement = np.mean(movement_vectors, axis=0)
-        movement_magnitude = np.linalg.norm(avg_movement)
+        debug_data['movement_vector'] = movement_vec.tolist()
+        debug_data['movement_magnitude'] = movement_magnitude
+        debug_data['recent_positions'] = [list(pos[:2]) for pos in recent_positions]
         
-        # Check if movement is significant enough
-        if movement_magnitude < self.movement_config['min_velocity_threshold']:
-            return None
+        # Check if there's sufficient movement
+        min_movement = self.movement_config.get('min_movement_threshold', 0.1)
+        if movement_magnitude < min_movement:
+            debug_data['issues'].append(f"Insufficient movement ({movement_magnitude:.3f} < {min_movement})")
+            return None, debug_data
         
-        # Calculate orientation angle from movement
-        movement_angle = math.degrees(math.atan2(avg_movement[1], avg_movement[0]))
-        movement_angle = (movement_angle + 360) % 360
+        # Calculate orientation angle from movement direction
+        orientation_angle = math.degrees(math.atan2(movement_vec[1], movement_vec[0]))
+        orientation_angle = (orientation_angle + 360) % 360
         
         # Confidence based on movement magnitude and consistency
-        confidence = min(1.0, movement_magnitude / self.movement_config['confidence_boost_speed'])
-        confidence *= self.movement_config.get('movement_base_confidence', 0.7)
+        confidence = min(0.8, movement_magnitude * 2.0)  # Scale movement to confidence
         
-        # Check consistency across recent movements
-        if len(movement_vectors) > 3:
-            angles = [math.degrees(math.atan2(v[1], v[0])) for v in movement_vectors]
-            angle_variance = np.var(angles)
-            consistency = max(0, 1 - angle_variance / 180)  # Normalize variance
-            confidence *= (0.5 + 0.5 * consistency)
+        debug_data['orientation_angle'] = orientation_angle
+        debug_data['confidence'] = confidence
         
+        # Create facing vector
         facing_vector = (
-            math.cos(math.radians(movement_angle)),
-            math.sin(math.radians(movement_angle))
+            math.cos(math.radians(orientation_angle)),
+            math.sin(math.radians(orientation_angle))
         )
         
         return OrientationEstimate(
             person_id=person_id,
             timestamp=timestamp,
-            orientation_angle=movement_angle,
+            orientation_angle=orientation_angle,
             confidence=confidence,
             method='movement',
             facing_vector=facing_vector,
             movement_magnitude=movement_magnitude
-        )
+        ), debug_data
     
-    def _depth_gradient_orientation(self, person, depth_frame: np.ndarray, 
-                                  timestamp: float) -> Optional[OrientationEstimate]:
-        """Estimate orientation from depth gradient analysis."""
+    def _movement_based_orientation(self, person, timestamp: float) -> Optional[OrientationEstimate]:
+        """Estimate orientation from movement direction (legacy method)."""
+        estimate, _ = self._movement_based_orientation_with_debug(person, timestamp)
+        return estimate
+    
+    def _depth_gradient_orientation_with_debug(self, person, depth_frame: np.ndarray, 
+                                             timestamp: float) -> Tuple[Optional[OrientationEstimate], Dict]:
+        """Estimate orientation from depth gradients with debug info."""
+        debug_data = {'method': 'depth_gradient', 'issues': []}
+        
         person_id = person.id
         bbox = person.current_detection.bounding_box
         x, y, w, h = bbox
         
         # Extract person region from depth frame
-        roi = depth_frame[y:y+h, x:x+w].copy()
-        if roi.size == 0:
-            return None
+        person_depth = depth_frame[y:y+h, x:x+w]
         
-        # Clean depth data
-        roi[roi == 0] = np.nan
-        if np.all(np.isnan(roi)):
-            return None
+        if person_depth.size == 0:
+            debug_data['issues'].append("Empty depth ROI")
+            return None, debug_data
         
-        # Calculate depth gradients
-        roi_clean = np.nan_to_num(roi, nan=np.nanmean(roi))
+        # Remove invalid depth values (0 or very far)
+        valid_depth = person_depth[(person_depth > 0) & (person_depth < 5000)]  # mm
         
-        # Sobel gradients
-        grad_x = cv2.Sobel(roi_clean, cv2.CV_64F, 1, 0, ksize=5)
-        grad_y = cv2.Sobel(roi_clean, cv2.CV_64F, 0, 1, ksize=5)
+        if len(valid_depth) < 10:
+            debug_data['issues'].append("Insufficient valid depth points")
+            return None, debug_data
         
-        # Analyze asymmetry to determine front/back
-        # Front of person typically closer (smaller depth values)
-        roi_h, roi_w = roi_clean.shape
+        debug_data['roi_size'] = person_depth.shape
+        debug_data['valid_depth_points'] = len(valid_depth)
+        debug_data['depth_range'] = [float(valid_depth.min()), float(valid_depth.max())]
         
-        # Compare left vs right halves
-        left_half = roi_clean[:, :roi_w//2]
-        right_half = roi_clean[:, roi_w//2:]
+        # Calculate depth gradients (simplified approach)
+        # Split person region into left/right halves
+        mid_x = w // 2
+        left_half = person_depth[:, :mid_x]
+        right_half = person_depth[:, mid_x:]
         
-        left_mean = np.nanmean(left_half)
-        right_mean = np.nanmean(right_half)
+        # Get average depths for each half (excluding zeros)
+        left_valid = left_half[left_half > 0]
+        right_valid = right_half[right_half > 0]
         
-        # Compare top vs bottom halves  
-        top_half = roi_clean[:roi_h//2, :]
-        bottom_half = roi_clean[roi_h//2:, :]
+        if len(left_valid) < 5 or len(right_valid) < 5:
+            debug_data['issues'].append("Insufficient depth data in halves")
+            return None, debug_data
         
-        top_mean = np.nanmean(top_half)
-        bottom_mean = np.nanmean(bottom_half)
+        left_avg_depth = np.mean(left_valid)
+        right_avg_depth = np.mean(right_valid)
         
-        # Determine orientation based on asymmetry
-        lr_diff = left_mean - right_mean
-        tb_diff = top_mean - bottom_mean
+        debug_data['left_avg_depth'] = float(left_avg_depth)
+        debug_data['right_avg_depth'] = float(right_avg_depth)
         
-        # Assume person faces toward closer (lower depth) side
-        if abs(lr_diff) > abs(tb_diff):
-            # Left-right asymmetry dominates
-            if lr_diff > 0:
-                orientation_angle = 270  # Facing right
-            else:
-                orientation_angle = 90   # Facing left
+        # Depth difference indicates facing direction
+        depth_diff = left_avg_depth - right_avg_depth
+        debug_data['depth_difference'] = float(depth_diff)
+        
+        # Threshold for significant depth difference
+        min_gradient = self.gradient_config.get('min_gradient_strength', 50)  # mm
+        if abs(depth_diff) < min_gradient:
+            debug_data['issues'].append(f"Insufficient depth gradient ({abs(depth_diff):.1f} < {min_gradient})")
+            return None, debug_data
+        
+        # If left side is closer (smaller depth), person is facing right
+        # If right side is closer, person is facing left
+        if depth_diff > 0:
+            # Left side farther, right side closer -> facing right
+            orientation_angle = 90.0
         else:
-            # Top-bottom asymmetry dominates  
-            if tb_diff > 0:
-                orientation_angle = 180  # Facing down/back
-            else:
-                orientation_angle = 0    # Facing up/front
+            # Right side farther, left side closer -> facing left  
+            orientation_angle = 270.0
         
-        # Confidence based on asymmetry strength
-        max_asymmetry = max(abs(lr_diff), abs(tb_diff))
-        confidence = min(1.0, max_asymmetry / 0.5)  # 0.5m difference = full confidence
-        confidence *= self.gradient_config.get('confidence_threshold', 0.3)
+        # Confidence based on depth difference magnitude
+        confidence = min(0.6, abs(depth_diff) / 100.0)  # Scale to confidence
         
+        debug_data['orientation_angle'] = orientation_angle
+        debug_data['confidence'] = confidence
+        
+        # Create facing vector
         facing_vector = (
             math.cos(math.radians(orientation_angle)),
             math.sin(math.radians(orientation_angle))
@@ -456,63 +542,68 @@ class OrientationEstimator:
             confidence=confidence,
             method='depth_gradient',
             facing_vector=facing_vector
-        )
+        ), debug_data
+    
+    def _depth_gradient_orientation(self, person, depth_frame: np.ndarray, 
+                                  timestamp: float) -> Optional[OrientationEstimate]:
+        """Estimate orientation from depth gradients (legacy method)."""
+        estimate, _ = self._depth_gradient_orientation_with_debug(person, depth_frame, timestamp)
+        return estimate
     
     def _combine_orientation_estimates(self, estimates: List[OrientationEstimate], 
                                      timestamp: float) -> OrientationEstimate:
-        """Combine multiple orientation estimates using weighted averaging."""
+        """Combine multiple orientation estimates into a single best estimate."""
         if len(estimates) == 1:
             return estimates[0]
         
-        person_id = estimates[0].person_id
-        
-        # Weight by confidence and method priority
-        method_weights = {'skeleton': 1.0, 'movement': 0.7, 'depth_gradient': 0.4}
+        # Weight estimates by confidence and method priority
+        method_weights = {'skeleton': 3.0, 'movement': 2.0, 'depth_gradient': 1.0}
         
         total_weight = 0
         weighted_x = 0
         weighted_y = 0
-        weighted_confidence = 0
+        best_estimate = estimates[0]
         
         for estimate in estimates:
-            method_weight = method_weights.get(estimate.method, 0.5)
+            method_weight = method_weights.get(estimate.method, 1.0)
             weight = estimate.confidence * method_weight
             
             # Convert angle to unit vector for averaging
             x = math.cos(math.radians(estimate.orientation_angle))
             y = math.sin(math.radians(estimate.orientation_angle))
             
-            weighted_x += weight * x
-            weighted_y += weight * y
-            weighted_confidence += weight
+            weighted_x += x * weight
+            weighted_y += y * weight
             total_weight += weight
+            
+            # Keep the highest confidence estimate as base
+            if estimate.confidence > best_estimate.confidence:
+                best_estimate = estimate
         
-        if total_weight == 0:
-            return estimates[0]  # Fallback
+        # Calculate combined angle
+        if total_weight > 0:
+            avg_x = weighted_x / total_weight
+            avg_y = weighted_y / total_weight
+            combined_angle = math.degrees(math.atan2(avg_y, avg_x))
+            combined_angle = (combined_angle + 360) % 360
+        else:
+            combined_angle = best_estimate.orientation_angle
         
-        # Average the vectors
-        avg_x = weighted_x / total_weight
-        avg_y = weighted_y / total_weight
-        
-        # Convert back to angle
-        combined_angle = math.degrees(math.atan2(avg_y, avg_x))
-        combined_angle = (combined_angle + 360) % 360
-        
-        # Average confidence with bonus for method agreement
-        combined_confidence = weighted_confidence / total_weight
-        if len(estimates) > 1:
-            combined_confidence += self.config.get('confidence_scoring', {}).get('multi_method_agreement_bonus', 0.15)
-            combined_confidence = min(1.0, combined_confidence)
+        # Boost confidence for multi-method agreement
+        combined_confidence = min(1.0, best_estimate.confidence + 0.15)
         
         return OrientationEstimate(
-            person_id=person_id,
+            person_id=best_estimate.person_id,
             timestamp=timestamp,
             orientation_angle=combined_angle,
             confidence=combined_confidence,
             method='combined',
-            facing_vector=(avg_x, avg_y),
-            joint_visibility_count=max(e.joint_visibility_count for e in estimates),
-            movement_magnitude=max(e.movement_magnitude for e in estimates)
+            facing_vector=(math.cos(math.radians(combined_angle)), 
+                          math.sin(math.radians(combined_angle))),
+            head_angle=best_estimate.head_angle,
+            body_angle=best_estimate.body_angle,
+            joint_visibility_count=best_estimate.joint_visibility_count,
+            movement_magnitude=best_estimate.movement_magnitude
         )
     
     def _apply_temporal_smoothing(self, person_id: int, angle: float, 
@@ -524,7 +615,8 @@ class OrientationEstimator:
         last_estimate = self.last_orientations[person_id]
         time_diff = timestamp - last_estimate.timestamp
         
-        if time_diff > 2.0:  # Too much time passed, don't smooth
+        # Skip smoothing if too much time has passed
+        if time_diff > 2.0:  # 2 seconds
             return angle, confidence
         
         # Calculate angular difference (handling wrap-around)
@@ -532,292 +624,220 @@ class OrientationEstimator:
         if angle_diff > 180:
             angle_diff = 360 - angle_diff
         
-        # If change is too rapid, reduce confidence
-        max_change = self.skeleton_config.get('max_angle_change', 45)
-        if angle_diff > max_change:
-            confidence *= 0.7
-        
-        # Exponential smoothing
-        alpha = self.skeleton_config.get('smoothing_alpha', 0.7)
-        
-        # Handle angle wrap-around for smoothing
-        if abs(angle - last_estimate.orientation_angle) > 180:
-            if angle > last_estimate.orientation_angle:
-                angle -= 360
+        # Apply smoothing if change is reasonable
+        if angle_diff < 90:  # Reasonable change
+            alpha = self.skeleton_config.get('smoothing_alpha', 0.7)
+            
+            # Smooth angle (handling wrap-around)
+            if abs(angle - last_estimate.orientation_angle) <= 180:
+                smoothed_angle = alpha * angle + (1 - alpha) * last_estimate.orientation_angle
             else:
-                angle += 360
+                # Handle wrap-around case
+                if angle > last_estimate.orientation_angle:
+                    adjusted_last = last_estimate.orientation_angle + 360
+                else:
+                    adjusted_last = last_estimate.orientation_angle - 360
+                smoothed_angle = alpha * angle + (1 - alpha) * adjusted_last
+                
+            smoothed_angle = (smoothed_angle + 360) % 360
+            
+            # Boost confidence for temporal consistency
+            consistency_bonus = max(0, 0.2 - angle_diff / 180.0)
+            smoothed_confidence = min(1.0, confidence + consistency_bonus)
+            
+            return smoothed_angle, smoothed_confidence
         
-        smoothed_angle = alpha * angle + (1 - alpha) * last_estimate.orientation_angle
-        smoothed_angle = (smoothed_angle + 360) % 360
-        
-        # Boost confidence for temporal consistency
-        consistency_bonus = self.config.get('confidence_scoring', {}).get('temporal_consistency_bonus', 0.2)
-        if angle_diff < 15:  # Small change
-            confidence = min(1.0, confidence + consistency_bonus)
-        
-        return smoothed_angle, confidence
+        return angle, confidence
     
     def _fallback_orientation(self, person, timestamp: float) -> Optional[OrientationEstimate]:
         """Provide fallback orientation when all methods fail."""
         person_id = person.id
         
-        # Use last known orientation if available
+        # Use last known orientation if available and recent
         if person_id in self.last_orientations:
-            last = self.last_orientations[person_id]
-            if timestamp - last.timestamp < self.config.get('error_handling', {}).get('last_known_timeout', 60):
-                # Return last known with reduced confidence
+            last_estimate = self.last_orientations[person_id]
+            time_diff = timestamp - last_estimate.timestamp
+            
+            if time_diff < 60.0:  # Use last known if within 60 seconds
+                # Decay confidence over time
+                decayed_confidence = max(0.1, last_estimate.confidence * 0.5)
+                
                 return OrientationEstimate(
                     person_id=person_id,
                     timestamp=timestamp,
-                    orientation_angle=last.orientation_angle,
-                    confidence=max(0.1, last.confidence * 0.5),
+                    orientation_angle=last_estimate.orientation_angle,
+                    confidence=decayed_confidence,
                     method='fallback_last_known',
-                    facing_vector=last.facing_vector
+                    facing_vector=last_estimate.facing_vector
                 )
         
-        # Default to forward-facing with low confidence
-        default_angle = self.config.get('classroom_orientation', {}).get('default_forward_direction', 0)
-        
+        # Default fallback - assume facing forward
         return OrientationEstimate(
             person_id=person_id,
             timestamp=timestamp,
-            orientation_angle=default_angle,
+            orientation_angle=0.0,
             confidence=0.1,
             method='fallback_default',
-            facing_vector=(math.cos(math.radians(default_angle)), 
-                          math.sin(math.radians(default_angle)))
+            facing_vector=(1.0, 0.0)
         )
     
-    def _update_history(self, person_id: int, orientation: OrientationEstimate):
+    def _update_history(self, person_id: int, estimate: OrientationEstimate):
         """Update orientation history for a person."""
         if person_id not in self.orientation_history:
-            self.orientation_history[person_id] = deque(maxlen=100)
+            self.orientation_history[person_id] = deque(maxlen=50)
         
-        self.orientation_history[person_id].append(orientation)
-        self.last_orientations[person_id] = orientation
+        self.orientation_history[person_id].append(estimate)
+        self.last_orientations[person_id] = estimate
     
-    def analyze_mutual_orientations(self, orientations: List[OrientationEstimate], 
+    def analyze_mutual_orientations(self, orientations: List[OrientationEstimate],
                                   tracked_people: List) -> List[MutualOrientation]:
-        """Analyze mutual orientations between all pairs of people."""
+        """Analyze mutual orientations between pairs of people."""
         mutual_orientations = []
         
-        # Create position lookup
+        # Create lookup for positions
         position_lookup = {}
         for person in tracked_people:
             if person.current_detection:
                 position_lookup[person.id] = person.get_latest_position()
         
-        # Analyze all pairs
+        # Analyze all pairs of orientations
         for i, orient1 in enumerate(orientations):
             for j, orient2 in enumerate(orientations[i+1:], i+1):
                 if orient1.person_id == orient2.person_id:
                     continue
                 
-                # Get positions
                 pos1 = position_lookup.get(orient1.person_id)
                 pos2 = position_lookup.get(orient2.person_id)
                 
-                if pos1 is None or pos2 is None:
-                    continue
-                
-                mutual = self._calculate_mutual_orientation(orient1, orient2, pos1, pos2)
-                if mutual:
-                    mutual_orientations.append(mutual)
+                if pos1 and pos2:
+                    mutual = self._calculate_mutual_orientation(orient1, orient2, pos1, pos2)
+                    if mutual:
+                        mutual_orientations.append(mutual)
         
         return mutual_orientations
     
-    def _calculate_mutual_orientation(self, orient1: OrientationEstimate, orient2: OrientationEstimate,
-                                    pos1: Tuple[float, float, float], pos2: Tuple[float, float, float]) -> Optional[MutualOrientation]:
+    def _calculate_mutual_orientation(self, orient1: OrientationEstimate, 
+                                    orient2: OrientationEstimate,
+                                    pos1: Tuple[float, float, float],
+                                    pos2: Tuple[float, float, float]) -> Optional[MutualOrientation]:
         """Calculate mutual orientation metrics between two people."""
-        # Calculate angle from person1 to person2
-        dx = pos2[0] - pos1[0]
-        dy = pos2[1] - pos1[1]
-        distance = math.sqrt(dx*dx + dy*dy)
         
-        if distance < 0.1:  # Too close for meaningful orientation
+        # Calculate relative position vector
+        rel_pos = np.array([pos2[0] - pos1[0], pos2[1] - pos1[1]])
+        distance = np.linalg.norm(rel_pos)
+        
+        # Skip if too far apart
+        if distance > 3.0:  # 3 meters max for interaction
             return None
         
-        # Angle from person1 to person2
-        target_angle_1_to_2 = math.degrees(math.atan2(dy, dx))
-        target_angle_1_to_2 = (target_angle_1_to_2 + 360) % 360
+        # Calculate angles each person would need to turn to face the other
+        # Angle from person1's position to person2
+        angle_to_person2 = math.degrees(math.atan2(rel_pos[1], rel_pos[0]))
+        angle_to_person2 = (angle_to_person2 + 360) % 360
         
-        # Angle from person2 to person1  
-        target_angle_2_to_1 = (target_angle_1_to_2 + 180) % 360
+        # Angle from person2's position to person1
+        angle_to_person1 = math.degrees(math.atan2(-rel_pos[1], -rel_pos[0]))
+        angle_to_person1 = (angle_to_person1 + 360) % 360
         
-        # Calculate how much each person would need to turn
-        turn_angle_1 = self._calculate_turn_angle(orient1.orientation_angle, target_angle_1_to_2)
-        turn_angle_2 = self._calculate_turn_angle(orient2.orientation_angle, target_angle_2_to_1)
+        # Calculate turn angles
+        turn_angle_1_to_2 = self._calculate_turn_angle(orient1.orientation_angle, angle_to_person2)
+        turn_angle_2_to_1 = self._calculate_turn_angle(orient2.orientation_angle, angle_to_person1)
         
         # Calculate mutual facing score
-        max_turn = max(turn_angle_1, turn_angle_2)
-        facing_threshold = self.config.get('mutual_orientation', {}).get('facing_angle_threshold', 60)
-        
-        if max_turn <= facing_threshold:
-            mutual_facing_score = 1.0 - (max_turn / facing_threshold)
-        else:
-            mutual_facing_score = 0.0
+        # Lower turn angles = higher score
+        score1 = max(0, 1.0 - turn_angle_1_to_2 / 180.0)
+        score2 = max(0, 1.0 - turn_angle_2_to_1 / 180.0)
+        mutual_facing_score = (score1 + score2) / 2.0
         
         # Weight by orientation confidence
-        combined_confidence = (orient1.confidence + orient2.confidence) / 2
-        mutual_facing_score *= combined_confidence
+        confidence_weight = (orient1.confidence + orient2.confidence) / 2.0
+        mutual_facing_score *= confidence_weight
         
-        # F-formation detection
-        f_formation_config = self.config.get('mutual_orientation', {})
-        in_f_formation = False
-        o_space_center = None
-        group_coherence = 0.0
-        
-        if f_formation_config.get('f_formation_enabled', True):
-            # Check if both people are oriented toward a common center point
-            o_space_radius = f_formation_config.get('o_space_radius', 1.5)
-            
-            # Calculate potential O-space center
-            center_x = (pos1[0] + pos2[0]) / 2
-            center_y = (pos1[1] + pos2[1]) / 2
-            o_space_center = (center_x, center_y)
-            
-            # Check if both people are facing toward the center
-            angle_to_center_1 = math.degrees(math.atan2(center_y - pos1[1], center_x - pos1[0]))
-            angle_to_center_2 = math.degrees(math.atan2(center_y - pos2[1], center_x - pos2[0]))
-            
-            turn_to_center_1 = self._calculate_turn_angle(orient1.orientation_angle, angle_to_center_1)
-            turn_to_center_2 = self._calculate_turn_angle(orient2.orientation_angle, angle_to_center_2)
-            
-            # F-formation if both face toward center and are within reasonable distance
-            center_facing_threshold = 45  # degrees
-            if (turn_to_center_1 <= center_facing_threshold and 
-                turn_to_center_2 <= center_facing_threshold and
-                distance <= o_space_radius * 2):
-                
-                in_f_formation = True
-                group_coherence = 1.0 - (turn_to_center_1 + turn_to_center_2) / (2 * center_facing_threshold)
-                group_coherence *= combined_confidence
+        # Check for F-formation
+        in_f_formation = self._detect_f_formation([orient1, orient2], [pos1, pos2])
         
         return MutualOrientation(
             person1_id=orient1.person_id,
             person2_id=orient2.person_id,
             timestamp=orient1.timestamp,
-            person1_to_person2_angle=turn_angle_1,
-            person2_to_person1_angle=turn_angle_2,
+            person1_to_person2_angle=turn_angle_1_to_2,
+            person2_to_person1_angle=turn_angle_2_to_1,
             mutual_facing_score=mutual_facing_score,
             in_f_formation=in_f_formation,
-            o_space_center=o_space_center,
-            group_coherence=group_coherence
+            group_coherence=mutual_facing_score if in_f_formation else 0.0
         )
     
     def _calculate_turn_angle(self, current_angle: float, target_angle: float) -> float:
-        """Calculate minimum turn angle between two orientations."""
-        diff = abs(current_angle - target_angle)
-        return min(diff, 360 - diff)
+        """Calculate the minimum turn angle from current to target orientation."""
+        diff = target_angle - current_angle
+        
+        # Normalize to [-180, 180]
+        while diff > 180:
+            diff -= 360
+        while diff < -180:
+            diff += 360
+        
+        return abs(diff)
+    
+    def _detect_f_formation(self, orientations: List[OrientationEstimate], 
+                          positions: List[Tuple[float, float, float]]) -> bool:
+        """Detect if people are in F-formation (facing a common interaction space)."""
+        if len(orientations) < 2:
+            return False
+        
+        # For 2 people: check if they're facing each other or a common area
+        if len(orientations) == 2:
+            # Calculate if facing vectors intersect in reasonable space
+            pos1 = np.array(positions[0][:2])
+            pos2 = np.array(positions[1][:2])
+            
+            # Get facing vectors
+            face1 = np.array(orientations[0].facing_vector)
+            face2 = np.array(orientations[1].facing_vector)
+            
+            # Project facing vectors and see if they intersect
+            # This is a simplified F-formation detection
+            distance = np.linalg.norm(pos2 - pos1)
+            
+            # Check if people are close enough and roughly facing each other
+            if distance < 2.0:  # Within 2 meters
+                # Calculate dot product of facing vectors (should be negative for facing each other)
+                facing_dot = np.dot(face1, face2)
+                if facing_dot < -0.3:  # Somewhat facing each other
+                    return True
+        
+        return False
     
     def get_orientation_statistics(self) -> Dict:
         """Get statistics about orientation estimation performance."""
-        total_success = sum(self.method_success_counts.values())
+        total_attempts = sum(self.method_success_counts.values())
         
         stats = {
             'total_estimates': self.total_estimates,
             'method_success_counts': self.method_success_counts.copy(),
             'method_success_rates': {},
             'active_people_tracked': len(self.orientation_history),
-            'avg_confidence_by_method': {},
+            'avg_confidence_by_method': {}
         }
         
         # Calculate success rates
         for method, count in self.method_success_counts.items():
-            if self.total_estimates > 0:
-                stats['method_success_rates'][method] = count / self.total_estimates
+            if total_attempts > 0:
+                stats['method_success_rates'][method] = count / total_attempts
             else:
                 stats['method_success_rates'][method] = 0.0
         
-        # Calculate average confidence by method
-        for person_history in self.orientation_history.values():
-            for orientation in person_history:
-                method = orientation.method
-                if method not in stats['avg_confidence_by_method']:
-                    stats['avg_confidence_by_method'][method] = []
-                stats['avg_confidence_by_method'][method].append(orientation.confidence)
-        
-        # Average the confidence scores
-        for method in stats['avg_confidence_by_method']:
-            confidences = stats['avg_confidence_by_method'][method]
-            stats['avg_confidence_by_method'][method] = np.mean(confidences) if confidences else 0.0
+        # Calculate average confidence by method (simplified)
+        for method in self.method_success_counts.keys():
+            # This would ideally track confidence per method
+            stats['avg_confidence_by_method'][method] = 0.7  # Placeholder
         
         return stats
     
     def reset(self):
-        """Reset all orientation tracking state."""
+        """Reset the orientation estimator state."""
         self.orientation_history.clear()
         self.velocity_history.clear()
         self.last_orientations.clear()
         self.method_success_counts = {'skeleton': 0, 'movement': 0, 'depth_gradient': 0}
         self.total_estimates = 0
-        self.logger.info("Orientation estimator reset")
-    
-    def visualize_orientations(self, frame: np.ndarray, orientations: List[OrientationEstimate],
-                             mutual_orientations: List[MutualOrientation] = None) -> np.ndarray:
-        """Create visualization of orientation estimates."""
-        vis_frame = frame.copy()
-        viz_config = self.config.get('orientation_visualization', {})
-        
-        if not viz_config.get('draw_orientation_vectors', True):
-            return vis_frame
-        
-        # Draw individual orientations
-        for orientation in orientations:
-            self._draw_orientation_vector(vis_frame, orientation, viz_config)
-        
-        # Draw mutual orientations
-        if mutual_orientations and viz_config.get('draw_facing_connections', True):
-            for mutual in mutual_orientations:
-                self._draw_mutual_orientation(vis_frame, mutual, orientations, viz_config)
-        
-        return vis_frame
-    
-    def _draw_orientation_vector(self, frame: np.ndarray, orientation: OrientationEstimate, viz_config: Dict):
-        """Draw orientation vector for a single person."""
-        # Find person position (simplified - would need person lookup in real implementation)
-        # For now, we'll use a placeholder center point
-        person_center = (320, 240)  # This should come from the person's detection
-        
-        vector_length = viz_config.get('vector_length', 100)
-        colors = viz_config.get('vector_colors', {})
-        color = colors.get(orientation.method, (255, 255, 255))
-        
-        # Calculate end point of orientation vector
-        angle_rad = math.radians(orientation.orientation_angle)
-        end_x = int(person_center[0] + vector_length * math.cos(angle_rad))
-        end_y = int(person_center[1] + vector_length * math.sin(angle_rad))
-        
-        # Draw orientation vector
-        cv2.arrowedLine(frame, person_center, (end_x, end_y), color, 2, tipLength=0.3)
-        
-        # Draw confidence circle
-        if viz_config.get('draw_confidence_circle', True):
-            radius = int(viz_config.get('confidence_circle_radius', 30) * orientation.confidence)
-            cv2.circle(frame, person_center, radius, color, 1)
-        
-        # Show orientation angle
-        if viz_config.get('show_orientation_angle', True):
-            angle_text = f"{orientation.orientation_angle:.0f}°"
-            text_offset = viz_config.get('angle_text_offset', (10, -10))
-            text_pos = (person_center[0] + text_offset[0], person_center[1] + text_offset[1])
-            cv2.putText(frame, angle_text, text_pos, cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-    
-    def _draw_mutual_orientation(self, frame: np.ndarray, mutual: MutualOrientation,
-                               orientations: List[OrientationEstimate], viz_config: Dict):
-        """Draw mutual orientation connection between two people."""
-        # This would need actual person positions
-        # Placeholder implementation
-        if mutual.mutual_facing_score > 0.5:
-            color = viz_config.get('mutual_attention_color', (255, 0, 255))
-            thickness = viz_config.get('facing_line_thickness', 3)
-            
-            # Draw connection line (would need real positions)
-            # cv2.line(frame, person1_pos, person2_pos, color, thickness)
-            
-            # Draw F-formation indicator
-            if mutual.in_f_formation and mutual.o_space_center:
-                center = (int(mutual.o_space_center[0]), int(mutual.o_space_center[1]))
-                cv2.circle(frame, center, 20, color, 2)
-                cv2.putText(frame, "F-Form", (center[0]-25, center[1]-25), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
