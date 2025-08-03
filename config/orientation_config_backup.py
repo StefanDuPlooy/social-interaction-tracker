@@ -10,14 +10,14 @@ ORIENTATION_METHODS = {
     'skeleton_based': {
         'enabled': True,
         'priority': 1,
-        'confidence_threshold': 0.3,
+        'confidence_threshold': 0.6,
         'required_joints': ['left_shoulder', 'right_shoulder', 'neck', 'nose'],
         'fallback_joints': ['left_shoulder', 'right_shoulder'],
     },
     'movement_based': {
         'enabled': True,
         'priority': 2,
-        'min_movement_threshold': 0.05,  # meters
+        'min_movement_threshold': 0.1,  # meters
         'smoothing_window': 5,  # frames
         'confidence_decay': 0.9,  # per frame when stationary
     },
@@ -33,7 +33,7 @@ ORIENTATION_METHODS = {
 # Skeleton-Based Orientation Parameters
 SKELETON_ORIENTATION = {
     # Joint confidence thresholds (YOLO pose estimation scores)
-    'joint_confidence_threshold': 0.2,
+    'joint_confidence_threshold': 0.3,
     'required_joint_count': 2,  # Minimum joints needed
     
     # Orientation calculation methods
@@ -48,7 +48,7 @@ SKELETON_ORIENTATION = {
     # Face direction estimation
     'use_face_keypoints': True,
     'face_keypoints': ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear'],
-    'face_confidence_threshold': 0.3,
+    'face_confidence_threshold': 0.4,
 }
 
 # Movement-Based Orientation Parameters
