@@ -1,0 +1,33 @@
+{
+  "timestamp": "2025-08-04 16:54:34",
+  "issues": [
+    "no_keypoints_data_full_frame",
+    "no_keypoints_data_roi_150x200",
+    "no_keypoints_data_roi_100x150",
+    "no_keypoints_data_roi_80x120",
+    "no_keypoints_data_roi_50x80",
+    "no_person_in_roi_0",
+    "no_person_in_roi_1",
+    "no_person_in_roi_2",
+    "no_person_in_roi_3",
+    "bbox_out_of_bounds_4",
+    "no_person_in_roi_4"
+  ],
+  "bbox_issues": [
+    "bbox_out_of_bounds_4"
+  ],
+  "roi_issues": [],
+  "keypoint_issues": [
+    "no_person_in_roi_0",
+    "no_person_in_roi_1",
+    "no_person_in_roi_2",
+    "no_person_in_roi_3",
+    "no_person_in_roi_4"
+  ],
+  "recommendations": [
+    "Add bounds checking before ROI extraction",
+    "Validate ROI size before pose detection",
+    "Handle partially visible persons",
+    "Check tracking consistency for movement method"
+  ]
+}

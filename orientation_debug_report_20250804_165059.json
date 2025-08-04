@@ -1,0 +1,11 @@
+{
+  "timestamp": "2025-08-04 16:50:59",
+  "issues_found": [
+    "camera_detection_failed",
+    "skeleton_detailed_test_failed",
+    "movement_detailed_test_failed",
+    "live_visual_debug_failed"
+  ],
+  "debug_data": {},
+  "recommendations": []
+}
