@@ -30,7 +30,7 @@ from config.tracking_config import TRACKING_PARAMETERS
 from config.proximity_config import CLASSROOM_PROXIMITY
 from config.orientation_config import ORIENTATION_METHODS, SKELETON_ORIENTATION, MUTUAL_ORIENTATION
 
-# Setup logging
+# Setup logging     
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(name)s] %(levelname)s: %(message)s'
