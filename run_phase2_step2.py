@@ -58,9 +58,9 @@ class SinglePanelLayout:
     def create_combined_view(self, vis_frame, orientations, mutual_orientations, stats, debug_data):
         """Create single combined view with main video + side panels."""
         
-        # Create the full combined frame
+        # Create the full combined frame with modern dark theme
         combined = np.zeros((self.total_height, self.screen_width, 3), dtype=np.uint8)
-        combined[:] = (20, 20, 20)  # Dark background
+        combined[:] = (25, 25, 30)  # Modern dark background with slight blue tint
         
         # 1. Main video (left side, 70% width)
         main_resized = cv2.resize(vis_frame, (self.main_video_width, self.total_height))
@@ -74,90 +74,96 @@ class SinglePanelLayout:
         debug_panel = self.create_debug_panel(debug_data)
         combined[self.stats_height:, self.main_video_width:] = debug_panel
         
-        # Add separating lines
-        line_color = (80, 80, 80)
+        # Add modern separating lines with subtle gradients
+        line_color = (60, 60, 70)  # Lighter, more modern separator
         # Vertical line between main video and panels
-        cv2.line(combined, (self.main_video_width, 0), (self.main_video_width, self.total_height), line_color, 3)
-        # Horizontal line between stats and debug panels
-        cv2.line(combined, (self.main_video_width, self.stats_height), (self.screen_width, self.stats_height), line_color, 3)
+        cv2.line(combined, (self.main_video_width, 0), (self.main_video_width, self.total_height), line_color, 2)
+        # Horizontal line between stats and debug panels  
+        cv2.line(combined, (self.main_video_width, self.stats_height), (self.screen_width, self.stats_height), line_color, 2)
         
         return combined
     
     def create_stats_panel(self, orientations, mutual_orientations, stats):
-        """Create statistics panel."""
+        """Create modern statistics panel."""
         panel = np.zeros((self.stats_height, self.panel_width, 3), dtype=np.uint8)
-        panel[:] = (30, 30, 30)  # Dark gray background
+        panel[:] = (35, 35, 40)  # Modern dark background
         
-        # Add border
-        cv2.rectangle(panel, (5, 5), (self.panel_width-5, self.stats_height-5), (60, 60, 60), 2)
+        # Add subtle modern border with rounded corners effect
+        cv2.rectangle(panel, (8, 8), (self.panel_width-8, self.stats_height-8), (70, 70, 85), 1)
+        cv2.rectangle(panel, (10, 10), (self.panel_width-10, self.stats_height-10), (45, 45, 55), 1)
         
         y = 30
         line_height = 22
         
-        # Title
+        # Modern title with accent color
         cv2.putText(panel, "ORIENTATION ANALYSIS", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 240), 2)
         y += 45
         
-        # Current status with icons
+        # Current status with modern styling
         cv2.putText(panel, "STATUS", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 200, 140), 2)
         y += 30
         
-        # Active people
-        cv2.circle(panel, (25, y-5), 4, (0, 255, 0), -1)
+        # Modern status indicators with gradient-like effect
+        cv2.circle(panel, (25, y-5), 5, (20, 180, 20), -1)
+        cv2.circle(panel, (25, y-5), 3, (50, 220, 50), -1)  # Inner highlight
         cv2.putText(panel, f"People Detected: {len(orientations)}", (40, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 240, 245), 1)
         y += line_height
         
-        # Mutual orientations
-        cv2.circle(panel, (25, y-5), 4, (255, 255, 0), -1)
+        # Mutual orientations with modern styling
+        cv2.circle(panel, (25, y-5), 5, (255, 140, 0), -1)
+        cv2.circle(panel, (25, y-5), 3, (255, 170, 50), -1)  # Inner highlight
         cv2.putText(panel, f"Mutual Orientations: {len(mutual_orientations)}", (40, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 240, 245), 1)
         y += line_height
         
-        # F-formations
+        # F-formations with modern styling
         f_formations = sum(1 for m in mutual_orientations if m.in_f_formation)
-        cv2.circle(panel, (25, y-5), 4, (255, 0, 255), -1)
+        cv2.circle(panel, (25, y-5), 5, (220, 20, 60), -1)
+        cv2.circle(panel, (25, y-5), 3, (250, 60, 100), -1)  # Inner highlight
         cv2.putText(panel, f"F-Formations: {f_formations}", (40, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.48, (240, 240, 245), 1)
         y += 35
         
-        # Individual orientations
+        # Individual orientations section header
         cv2.putText(panel, "ORIENTATIONS", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (140, 200, 140), 2)
         y += 30
         
+        # Modern, high-contrast color scheme for white rooms
         method_colors = {
-            'skeleton': (0, 255, 0),
-            'movement': (255, 255, 0),
-            'depth_gradient': (255, 100, 0),
-            'combined': (0, 255, 255),
-            'fallback_last_known': (150, 150, 150)
+            'skeleton': (20, 180, 20),      # Deep green - most reliable
+            'movement': (255, 140, 0),      # Bright orange - medium reliability  
+            'depth_gradient': (220, 20, 60), # Crimson red - least reliable
+            'combined': (0, 150, 255),      # Bright blue - combined estimate
+            'fallback_last_known': (120, 120, 120)  # Medium gray
         }
         
         for i, orientation in enumerate(orientations[:6]):  # Show max 6
             color = method_colors.get(orientation.method, (255, 255, 255))
             
-            # Method indicator
-            cv2.circle(panel, (25, y-5), 4, color, -1)
+            # Modern method indicator with subtle border
+            cv2.circle(panel, (25, y-5), 5, color, -1)
+            cv2.circle(panel, (25, y-5), 6, (200, 200, 210), 1)  # Subtle border
             
-            # Person info
+            # Person info with improved contrast
             text = f"P{orientation.person_id}: {orientation.orientation_angle:.0f}°"
             cv2.putText(panel, text, (40, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.42, (240, 240, 245), 1)
             y += 16
             
-            # Confidence and method
-            conf_text = f"  {orientation.method} (conf: {orientation.confidence:.2f})"
+            # Method and confidence with better styling
+            conf_text = f"  {orientation.method} ({orientation.confidence:.2f})"
             cv2.putText(panel, conf_text, (40, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.36, color, 1)
             y += 20
         
-        # Method performance section
+        # Method performance section header
         y += 20
         cv2.putText(panel, "METHOD PERFORMANCE", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.48, (140, 200, 140), 2)
         y += 30
         
         orientation_stats = stats.get('orientation_stats', {})
@@ -166,16 +172,17 @@ class SinglePanelLayout:
         for method, count in method_counts.items():
             if count > 0:  # Only show methods with successes
                 color = method_colors.get(method, (255, 255, 255))
-                # Method indicator
-                cv2.rectangle(panel, (20, y-8), (30, y-2), color, -1)
+                # Modern rounded indicator
+                cv2.rectangle(panel, (20, y-8), (32, y-1), color, -1)
+                cv2.rectangle(panel, (19, y-9), (33, y), (200, 200, 210), 1)  # Border
                 cv2.putText(panel, f"{method.replace('_', ' ').title()}: {count}", (40, y),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (240, 240, 245), 1)
                 y += line_height
         
-        # Performance metrics
+        # Performance metrics header
         y += 25
         cv2.putText(panel, "PERFORMANCE", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.48, (140, 200, 140), 2)
         y += 30
         
         total_frames = stats.get('total_frames', 0)
@@ -183,46 +190,52 @@ class SinglePanelLayout:
         
         if total_frames > 0:
             success_rate = (frames_with_orientations / total_frames) * 100
+            # Color-code success rate
+            rate_color = (20, 180, 20) if success_rate > 70 else (255, 140, 0) if success_rate > 40 else (220, 20, 60)
             cv2.putText(panel, f"Success Rate: {success_rate:.1f}%", (25, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.46, rate_color, 1)
             y += line_height
         
         if 'processing_times' in stats and stats['processing_times']:
             avg_time = np.mean(stats['processing_times'][-10:])
             fps = 1.0 / max(avg_time, 0.001)
+            # Color-code FPS
+            fps_color = (20, 180, 20) if fps > 15 else (255, 140, 0) if fps > 8 else (220, 20, 60)
             cv2.putText(panel, f"FPS: {fps:.1f}", (25, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.46, fps_color, 1)
             y += line_height
         
         return panel
     
     def create_debug_panel(self, debug_data):
-        """Create debug information panel."""
+        """Create modern debug information panel."""
         panel = np.zeros((self.debug_height, self.panel_width, 3), dtype=np.uint8)
-        panel[:] = (20, 20, 40)  # Dark blue background
+        panel[:] = (30, 30, 45)  # Modern dark background with slight blue tint
         
-        # Add border
-        cv2.rectangle(panel, (5, 5), (self.panel_width-5, self.debug_height-5), (60, 60, 60), 2)
+        # Add subtle modern border
+        cv2.rectangle(panel, (8, 8), (self.panel_width-8, self.debug_height-8), (60, 60, 80), 1)
+        cv2.rectangle(panel, (10, 10), (self.panel_width-10, self.debug_height-10), (40, 40, 60), 1)
         
         y = 30
         line_height = 18
         
-        # Title
+        # Modern title
         cv2.putText(panel, "DEBUG INFO", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.58, (180, 180, 220), 2)
         y += 35
         
-        # Legend first
+        # Modern legend header
         cv2.putText(panel, "LEGEND", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.42, (140, 160, 180), 1)
         y += 25
         
+        # Updated legend with modern colors
         legend_items = [
-            ("Green circles", "Skeleton keypoints", (0, 255, 0)),
-            ("Green arrows", "Skeleton orientation", (0, 255, 0)),
-            ("Yellow arrows", "Movement orientation", (255, 255, 0)),
-            ("Red arrows", "Depth gradient", (255, 100, 0)),
-            ("Cyan arrows", "Combined estimate", (0, 255, 255))
+            ("Circles", "Skeleton keypoints", (20, 180, 20)),
+            ("Green arrows", "Skeleton orientation", (20, 180, 20)),
+            ("Orange arrows", "Movement orientation", (255, 140, 0)),
+            ("Red arrows", "Depth gradient", (220, 20, 60)),
+            ("Blue arrows", "Combined estimate", (0, 150, 255))
         ]
         
         for item, desc, color in legend_items:
@@ -287,120 +300,6 @@ class SinglePanelLayout:
         cv2.putText(panel, "CONTROLS: D=Debug, S=Save, Q=Quit", (15, y),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
         
-        # Add these methods to your existing SinglePanelLayout class in run_phase2_step2.py
-
-    def create_stats_panel(self, orientations, mutual_orientations, stats):
-        """Create statistics panel."""
-        panel = np.zeros((self.stats_height, self.panel_width, 3), dtype=np.uint8)
-        panel[:] = (30, 30, 30)  # Dark gray background
-        
-        # Add border
-        cv2.rectangle(panel, (5, 5), (self.panel_width-5, self.stats_height-5), (60, 60, 60), 2)
-        
-        y = 30
-        line_height = 22
-        
-        # Title
-        cv2.putText(panel, "ORIENTATION ANALYSIS", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        y += 45
-        
-        # Current status with icons
-        cv2.putText(panel, "STATUS", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
-        y += 30
-        
-        # Active people
-        cv2.circle(panel, (25, y-5), 4, (0, 255, 0), -1)
-        cv2.putText(panel, f"People Detected: {len(orientations)}", (40, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        y += line_height
-        
-        # Mutual orientations
-        cv2.circle(panel, (25, y-5), 4, (255, 255, 0), -1)
-        cv2.putText(panel, f"Mutual Orientations: {len(mutual_orientations)}", (40, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        y += line_height
-        
-        # F-formations
-        f_formations = sum(1 for m in mutual_orientations if m.in_f_formation)
-        cv2.circle(panel, (25, y-5), 4, (255, 0, 255), -1)
-        cv2.putText(panel, f"F-Formations: {f_formations}", (40, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-        y += 35
-        
-        # Individual orientations
-        cv2.putText(panel, "ORIENTATIONS", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
-        y += 30
-        
-        method_colors = {
-            'skeleton': (0, 255, 0),
-            'movement': (255, 255, 0),
-            'depth_gradient': (255, 100, 0),
-            'combined': (0, 255, 255),
-            'fallback_last_known': (150, 150, 150)
-        }
-        
-        for i, orientation in enumerate(orientations[:6]):  # Show max 6
-            color = method_colors.get(orientation.method, (255, 255, 255))
-            
-            # Method indicator
-            cv2.circle(panel, (25, y-5), 4, color, -1)
-            
-            # Person info
-            text = f"P{orientation.person_id}: {orientation.orientation_angle:.0f}°"
-            cv2.putText(panel, text, (40, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-            y += 16
-            
-            # Confidence and method
-            conf_text = f"  {orientation.method} (conf: {orientation.confidence:.2f})"
-            cv2.putText(panel, conf_text, (40, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1)
-            y += 20
-        
-        # Method performance section
-        y += 20
-        cv2.putText(panel, "METHOD PERFORMANCE", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
-        y += 30
-        
-        orientation_stats = stats.get('orientation_stats', {})
-        method_counts = orientation_stats.get('method_success_counts', {})
-        
-        for method, count in method_counts.items():
-            if count > 0:  # Only show methods with successes
-                color = method_colors.get(method, (255, 255, 255))
-                # Method indicator
-                cv2.rectangle(panel, (20, y-8), (30, y-2), color, -1)
-                cv2.putText(panel, f"{method.replace('_', ' ').title()}: {count}", (40, y),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
-                y += line_height
-        
-        # Performance metrics
-        y += 25
-        cv2.putText(panel, "PERFORMANCE", (15, y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
-        y += 30
-        
-        total_frames = stats.get('total_frames', 0)
-        frames_with_orientations = stats.get('frames_with_orientations', 0)
-        
-        if total_frames > 0:
-            success_rate = (frames_with_orientations / total_frames) * 100
-            cv2.putText(panel, f"Success Rate: {success_rate:.1f}%", (25, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-            y += line_height
-        
-        if 'processing_times' in stats and stats['processing_times']:
-            avg_time = np.mean(stats['processing_times'][-10:])
-            fps = 1.0 / max(avg_time, 0.001)
-            cv2.putText(panel, f"FPS: {fps:.1f}", (25, y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
-            y += line_height
-        
-        return panel
     
     def create_debug_panel(self, debug_data):
         """Create debug information panel."""
@@ -853,16 +752,16 @@ def run_phase2_step2_test():
             'draw_orientation_vectors': True,
             'vector_length': 80,
             'vector_colors': {
-                'skeleton': (0, 255, 0),
-                'movement': (255, 255, 0),
-                'depth_gradient': (255, 0, 0),
-                'combined': (0, 255, 255)
+                'skeleton': (20, 180, 20),      # Deep green
+                'movement': (255, 140, 0),      # Bright orange
+                'depth_gradient': (220, 20, 60), # Crimson red
+                'combined': (0, 150, 255)       # Bright blue
             },
             'draw_confidence_circle': True,
             'confidence_circle_radius': 30,
             'draw_facing_connections': True,
             'facing_line_thickness': 3,
-            'mutual_attention_color': (255, 0, 255),
+            'mutual_attention_color': (180, 50, 180),  # Modern purple
             'show_orientation_angle': True
         }
     }

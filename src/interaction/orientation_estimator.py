@@ -142,32 +142,48 @@ class OrientationEstimator:
         
         for method_name, method_config in methods_to_try:
             try:
+                self.logger.debug(f"Trying method {method_name} for person {person.id}")
+                
+                # Fix method name mapping and call appropriate method
                 if method_name == 'skeleton_based':
                     estimate, skeleton_debug = self._skeleton_based_orientation_with_debug(person, color_frame, timestamp)
                     debug_data['skeleton_data'] = skeleton_debug
+                    success_key = 'skeleton'
                 elif method_name == 'movement_based':
+                    self.logger.debug(f"Calling movement detection for person {person.id}")
                     estimate, movement_debug = self._movement_based_orientation_with_debug(person, timestamp)
                     debug_data['movement_data'] = movement_debug
+                    success_key = 'movement'
+                    self.logger.debug(f"Movement detection returned: estimate={estimate is not None}, debug_issues={movement_debug.get('issues', [])}")
                 elif method_name == 'depth_gradient':
                     estimate, depth_debug = self._depth_gradient_orientation_with_debug(person, depth_frame, timestamp)
                     debug_data['depth_data'] = depth_debug
+                    success_key = 'depth_gradient'
                 else:
+                    self.logger.debug(f"Unknown method {method_name}, skipping")
                     continue
                 
-                # Record method attempt
-                if estimate and estimate.confidence >= method_config.get('confidence_threshold', 0.5):
+                # Record method attempt with lower confidence threshold for testing
+                min_confidence = method_config.get('confidence_threshold', 0.3)
+                if estimate and estimate.confidence >= min_confidence:
                     estimates.append(estimate)
-                    self.method_success_counts[method_name] += 1
+                    if success_key in self.method_success_counts:
+                        self.method_success_counts[success_key] += 1
                     debug_data['method_attempts'][method_name] = {
                         'success': True,
                         'angle': estimate.orientation_angle,
                         'confidence': estimate.confidence
                     }
+                    self.logger.info(f"Method {method_name} succeeded for person {person.id}: {estimate.orientation_angle:.1f}° (conf: {estimate.confidence:.2f})")
                 else:
                     debug_data['method_attempts'][method_name] = {
                         'success': False,
-                        'reason': 'Low confidence' if estimate else 'Detection failed'
+                        'reason': f'Low confidence ({estimate.confidence:.2f} < {min_confidence})' if estimate else 'Detection failed'
                     }
+                    if estimate:
+                        self.logger.debug(f"Method {method_name} failed confidence check for person {person.id}: {estimate.confidence:.2f} < {min_confidence}")
+                    else:
+                        self.logger.debug(f"Method {method_name} returned no estimate for person {person.id}")
                     
             except Exception as e:
                 self.logger.debug(f"Method {method_name} failed for person {person_id}: {e}")
@@ -252,22 +268,26 @@ class OrientationEstimator:
             keypoints = result.keypoints.data[0].cpu().numpy()  # Shape: (17, 3)
             debug_data['keypoints'] = keypoints.tolist()
             
-            # ENHANCED DEBUG: Count and log visible keypoints
-            visible_keypoints = keypoints[keypoints[:, 2] > 0.3]
+            # ENHANCED DEBUG: Count and log visible keypoints with config threshold
+            confidence_threshold = self.skeleton_config.get('joint_confidence_threshold', 0.4)
+            visible_keypoints = keypoints[keypoints[:, 2] > confidence_threshold]
             debug_data['visible_keypoints_count'] = len(visible_keypoints)
             debug_data['total_keypoints'] = len(keypoints)
+            debug_data['confidence_threshold'] = confidence_threshold
             
-            self.logger.info(f"Person {person.id}: {len(visible_keypoints)} visible keypoints out of {len(keypoints)}")
+            self.logger.info(f"Person {person.id}: {len(visible_keypoints)} visible keypoints out of {len(keypoints)} (threshold: {confidence_threshold})")
             
-            if len(visible_keypoints) < 3:
-                debug_data['issues'].append(f"Insufficient keypoints ({len(visible_keypoints)} < 3)")
-                self.logger.warning(f"Person {person.id}: Insufficient keypoints ({len(visible_keypoints)} < 3)")
+            # Use config-based requirement
+            required_joint_count = self.skeleton_config.get('required_joint_count', 3)
+            if len(visible_keypoints) < required_joint_count:
+                debug_data['issues'].append(f"Insufficient keypoints ({len(visible_keypoints)} < {required_joint_count})")
+                self.logger.warning(f"Person {person.id}: Insufficient keypoints ({len(visible_keypoints)} < {required_joint_count})")
                 return None, debug_data
             
-            # Check for key skeletal landmarks
-            nose = keypoints[0] if keypoints[0, 2] > 0.3 else None
-            left_shoulder = keypoints[5] if keypoints[5, 2] > 0.3 else None
-            right_shoulder = keypoints[6] if keypoints[6, 2] > 0.3 else None
+            # Check for key skeletal landmarks with lower threshold
+            nose = keypoints[0] if keypoints[0, 2] > confidence_threshold else None
+            left_shoulder = keypoints[5] if keypoints[5, 2] > confidence_threshold else None
+            right_shoulder = keypoints[6] if keypoints[6, 2] > confidence_threshold else None
             
             # ENHANCED DEBUG: Log key point availability
             debug_data['key_points'] = {
@@ -307,8 +327,8 @@ class OrientationEstimator:
                 
             # Try head orientation from face keypoints  
             if nose is not None:
-                left_eye = keypoints[1] if keypoints[1, 2] > 0.3 else None
-                right_eye = keypoints[2] if keypoints[2, 2] > 0.3 else None
+                left_eye = keypoints[1] if keypoints[1, 2] > confidence_threshold else None
+                right_eye = keypoints[2] if keypoints[2, 2] > confidence_threshold else None
                 
                 if left_eye is not None and right_eye is not None:
                     # Eye vector
@@ -398,43 +418,132 @@ class OrientationEstimator:
         
         person_id = person.id
         
-        # Get position history
-        if not hasattr(person, 'position_history') or len(person.position_history) < 2:
-            debug_data['issues'].append("Insufficient position history")
+        # Enhanced position history debugging
+        debug_data['person_attributes'] = [attr for attr in dir(person) if not attr.startswith('_')]
+        debug_data['has_position_history'] = hasattr(person, 'position_history')
+        debug_data['has_velocity'] = hasattr(person, 'velocity')
+        
+        # Get position history - comprehensive approach
+        position_history = None
+        velocity_info = None
+        
+        if hasattr(person, 'position_history') and person.position_history:
+            position_history = list(person.position_history)
+            debug_data['position_history_length'] = len(position_history)
+            debug_data['position_history_source'] = 'position_history'
+            
+            # Log recent positions for debugging
+            debug_data['recent_positions'] = [list(pos) for pos in position_history[-3:]]
+            
+            # Check if person has calculated velocity
+            if hasattr(person, 'velocity') and person.velocity:
+                velocity_info = person.velocity
+                debug_data['tracker_velocity'] = velocity_info
+        
+        if not position_history or len(position_history) < 2:
+            issues = []
+            if not hasattr(person, 'position_history'):
+                issues.append("No position_history attribute")
+            elif not person.position_history:
+                issues.append("position_history is empty")
+            elif len(person.position_history) < 2:
+                issues.append(f"Only {len(person.position_history)} position(s) in history")
+            
+            debug_data['issues'].extend(issues)
+            debug_data['total_frames_seen'] = getattr(person, 'total_frames_seen', 'unknown')
+            self.logger.debug(f"Person {person.id} movement detection failed: {', '.join(issues)}")
             return None, debug_data
         
-        # Calculate movement vector from recent positions
-        recent_positions = person.position_history[-5:]  # Last 5 positions
-        if len(recent_positions) < 2:
-            debug_data['issues'].append("Insufficient recent positions")
-            return None, debug_data
+        # Try using tracker's calculated velocity first (more reliable)
+        if velocity_info and any(abs(v) > 0.001 for v in velocity_info[:2]):  # Check x, y velocity
+            velocity_vec = np.array(velocity_info[:2])  # x, y velocity
+            movement_magnitude = np.linalg.norm(velocity_vec)
+            
+            debug_data['velocity_source'] = 'tracker_velocity'
+            debug_data['velocity_vector'] = velocity_vec.tolist()
+            debug_data['velocity_magnitude'] = movement_magnitude
+            
+            # Use velocity vector for orientation
+            movement_vec = velocity_vec
+        else:
+            # Fall back to position-based calculation
+            debug_data['velocity_source'] = 'position_difference'
+            
+            # Use multiple position differences for better accuracy
+            recent_positions = position_history[-5:]  # Last 5 positions
+            if len(recent_positions) < 2:
+                debug_data['issues'].append("Insufficient recent positions")
+                return None, debug_data
+            
+            # Calculate average movement vector over recent positions
+            movement_vectors = []
+            for i in range(1, len(recent_positions)):
+                pos_current = np.array(recent_positions[i][:2])
+                pos_previous = np.array(recent_positions[i-1][:2])
+                movement_vectors.append(pos_current - pos_previous)
+            
+            if not movement_vectors:
+                debug_data['issues'].append("No movement vectors calculated")
+                return None, debug_data
+                
+            # Average the movement vectors for smoother orientation
+            movement_vec = np.mean(movement_vectors, axis=0)
+            movement_magnitude = np.linalg.norm(movement_vec)
+            
+            debug_data['movement_vectors'] = [v.tolist() for v in movement_vectors]
+            debug_data['averaged_movement'] = movement_vec.tolist()
         
-        # Calculate velocity vector
-        pos_current = np.array(recent_positions[-1][:2])  # x, y only
-        pos_previous = np.array(recent_positions[-2][:2])
-        
-        movement_vec = pos_current - pos_previous
-        movement_magnitude = np.linalg.norm(movement_vec)
-        
-        debug_data['movement_vector'] = movement_vec.tolist()
+        debug_data['final_movement_vector'] = movement_vec.tolist()
         debug_data['movement_magnitude'] = movement_magnitude
-        debug_data['recent_positions'] = [list(pos[:2]) for pos in recent_positions]
+        debug_data['recent_positions'] = [list(pos[:2]) for pos in recent_positions[-3:]]
         
         # Check if there's sufficient movement
-        min_movement = self.movement_config.get('min_movement_threshold', 0.1)
+        min_movement = self.movement_config.get('min_movement_threshold', 0.08)
         if movement_magnitude < min_movement:
-            debug_data['issues'].append(f"Insufficient movement ({movement_magnitude:.3f} < {min_movement})")
+            debug_data['issues'].append(f"Insufficient movement ({movement_magnitude:.4f} < {min_movement})")
+            debug_data['movement_too_small'] = True
             return None, debug_data
         
         # Calculate orientation angle from movement direction
         orientation_angle = math.degrees(math.atan2(movement_vec[1], movement_vec[0]))
         orientation_angle = (orientation_angle + 360) % 360
         
-        # Confidence based on movement magnitude and consistency
-        confidence = min(0.8, movement_magnitude * 2.0)  # Scale movement to confidence
+        # Improved confidence calculation
+        # Base confidence on movement magnitude
+        max_confidence = self.movement_config.get('movement_base_confidence', 0.6)
+        confidence_scale = min(1.0, movement_magnitude / 0.05)  # Full confidence at 0.05 m/frame (5cm)
+        confidence = max_confidence * confidence_scale
+        
+        # Boost confidence if we have multiple consistent movement vectors
+        if 'movement_vectors' in debug_data and len(debug_data['movement_vectors']) > 2:
+            # Check consistency of movement direction
+            angles = []
+            for vec in debug_data['movement_vectors']:
+                if np.linalg.norm(vec) > 0.01:  # Avoid noise
+                    angle = math.degrees(math.atan2(vec[1], vec[0]))
+                    angles.append((angle + 360) % 360)
+            
+            if len(angles) >= 2:
+                # Calculate angle variance (circular)
+                angle_variance = np.var([(a - angles[0] + 180) % 360 - 180 for a in angles])
+                if angle_variance < 900:  # Less than 30° variance
+                    confidence *= 1.2  # Boost for consistency
+                    debug_data['movement_consistency_bonus'] = True
+        
+        confidence = min(0.8, confidence)  # Cap at 0.8
         
         debug_data['orientation_angle'] = orientation_angle
         debug_data['confidence'] = confidence
+        debug_data['confidence_calculation'] = {
+            'base_confidence': max_confidence,
+            'magnitude_scale': confidence_scale,
+            'final_confidence': confidence
+        }
+        
+        # Log successful movement detection
+        self.logger.info(f"Person {person.id} movement orientation: {orientation_angle:.1f}° "
+                        f"(magnitude: {movement_magnitude:.4f}m, confidence: {confidence:.2f}, "
+                        f"source: {debug_data['velocity_source']})")
         
         # Create facing vector
         facing_vector = (

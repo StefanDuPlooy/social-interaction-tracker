@@ -234,3 +234,6 @@ data/calibration/
 # Model files (YOLO downloads)
 *.pt
 yolov*.pt
+
+CLAUDE.md
+.claude

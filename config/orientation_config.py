@@ -10,31 +10,32 @@ ORIENTATION_METHODS = {
     'skeleton_based': {
         'enabled': True,
         'priority': 1,
-        'confidence_threshold': 0.3,
+        'confidence_threshold': 0.6,  # Higher threshold for quality
         'required_joints': ['left_shoulder', 'right_shoulder', 'neck', 'nose'],
         'fallback_joints': ['left_shoulder', 'right_shoulder'],
     },
     'movement_based': {
         'enabled': True,
         'priority': 2,
-        'min_movement_threshold': 0.05,  # meters
+        'min_movement_threshold': 0.02,  # Lower threshold to catch normal walking
         'smoothing_window': 5,  # frames
         'confidence_decay': 0.9,  # per frame when stationary
+        'confidence_threshold': 0.4,  # Lower threshold to allow more detections
     },
     'depth_gradient': {
         'enabled': True,
         'priority': 3,
         'roi_size': (60, 120),  # width, height in pixels
-        'gradient_threshold': 0.05,  # meters depth difference
-        'confidence_threshold': 0.3,
+        'gradient_threshold': 0.08,  # meters depth difference - higher threshold
+        'confidence_threshold': 0.4,  # Higher threshold for quality
     }
 }
 
 # Skeleton-Based Orientation Parameters
 SKELETON_ORIENTATION = {
     # Joint confidence thresholds (YOLO pose estimation scores)
-    'joint_confidence_threshold': 0.2,
-    'required_joint_count': 2,  # Minimum joints needed
+    'joint_confidence_threshold': 0.4,  # Higher for quality detection
+    'required_joint_count': 3,  # More joints needed for reliability
     
     # Orientation calculation methods
     'shoulder_vector_weight': 0.7,  # Primary orientation from shoulders
@@ -54,7 +55,8 @@ SKELETON_ORIENTATION = {
 # Movement-Based Orientation Parameters
 MOVEMENT_ORIENTATION = {
     'velocity_history_length': 10,  # Frames to analyze
-    'min_velocity_threshold': 0.05,  # m/s minimum for reliable orientation
+    'min_velocity_threshold': 0.02,  # m/s minimum for reliable orientation - lowered
+    'min_movement_threshold': 0.02,  # meters - lowered to match ORIENTATION_METHODS
     'direction_smoothing_window': 7,  # Frames for direction averaging
     'stationary_timeout': 30,  # Frames before considering person stationary
     'confidence_boost_speed': 0.5,  # m/s speed that gives full confidence
@@ -64,33 +66,34 @@ MOVEMENT_ORIENTATION = {
 DEPTH_GRADIENT_ORIENTATION = {
     'analysis_roi_ratio': 0.6,  # Fraction of bounding box to analyze
     'gradient_kernel_size': 5,  # Sobel kernel size
-    'edge_detection_threshold': 0.03,  # Depth gradient threshold
+    'edge_detection_threshold': 0.05,  # Depth gradient threshold - higher
+    'min_gradient_strength': 80,  # mm - higher for better quality
     'body_front_assumption': True,  # Assume closer parts are front
-    'asymmetry_threshold': 0.1,  # Required asymmetry for orientation
+    'asymmetry_threshold': 0.15,  # Required asymmetry for orientation - higher
 }
 
 # Orientation Confidence Scoring
 CONFIDENCE_SCORING = {
-    'skeleton_base_confidence': 0.9,
-    'movement_base_confidence': 0.7,
-    'depth_gradient_base_confidence': 0.4,
+    'skeleton_base_confidence': 0.8,  # Slightly lower to be more selective
+    'movement_base_confidence': 0.6,  # Lower for selectivity
+    'depth_gradient_base_confidence': 0.3,  # Lower for selectivity
     
     # Confidence modifiers
-    'joint_visibility_bonus': 0.1,  # Per visible joint above minimum
-    'temporal_consistency_bonus': 0.2,  # For consistent orientation
-    'multi_method_agreement_bonus': 0.15,  # When methods agree
+    'joint_visibility_bonus': 0.15,  # Higher bonus for visible joints
+    'temporal_consistency_bonus': 0.25,  # Higher bonus for consistency
+    'multi_method_agreement_bonus': 0.2,  # Higher bonus when methods agree
     
     # Confidence penalties
-    'occlusion_penalty': 0.3,
-    'edge_detection_penalty': 0.2,
-    'rapid_change_penalty': 0.25,
+    'occlusion_penalty': 0.4,  # Higher penalty
+    'edge_detection_penalty': 0.3,  # Higher penalty
+    'rapid_change_penalty': 0.3,  # Higher penalty for rapid changes
 }
 
 # Mutual Orientation Analysis
 MUTUAL_ORIENTATION = {
-    'facing_angle_threshold': 60,  # degrees - people considered "facing" each other
-    'attention_angle_threshold': 30,  # degrees - people paying attention to each other
-    'orientation_agreement_threshold': 0.5,  # Confidence needed for mutual analysis
+    'facing_angle_threshold': 45,  # degrees - stricter facing threshold
+    'attention_angle_threshold': 25,  # degrees - stricter attention threshold
+    'orientation_agreement_threshold': 0.7,  # Higher confidence needed for mutual analysis
     
     # F-formation detection
     'f_formation_enabled': True,
@@ -133,16 +136,16 @@ ORIENTATION_VISUALIZATION = {
     'draw_orientation_vectors': True,
     'vector_length': 100,  # pixels
     'vector_colors': {
-        'skeleton': (0, 255, 0),      # Green - most reliable
-        'movement': (255, 255, 0),    # Yellow - medium reliability  
-        'depth_gradient': (255, 0, 0), # Red - least reliable
-        'combined': (0, 255, 255),    # Cyan - combined estimate
+        'skeleton': (20, 180, 20),      # Deep green - most reliable
+        'movement': (255, 140, 0),      # Bright orange - medium reliability  
+        'depth_gradient': (220, 20, 60), # Crimson red - least reliable
+        'combined': (0, 150, 255),      # Bright blue - combined estimate
     },
     'draw_confidence_circle': True,
     'confidence_circle_radius': 30,  # pixels
     'draw_facing_connections': True,
     'facing_line_thickness': 3,
-    'mutual_attention_color': (255, 0, 255),  # Magenta
+    'mutual_attention_color': (180, 50, 180),  # Modern purple
     'show_orientation_angle': True,
     'angle_text_offset': (10, -10),
 }

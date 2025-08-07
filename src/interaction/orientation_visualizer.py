@@ -26,21 +26,21 @@ class EnhancedOrientationVisualizer:
             'text_size': 0.4
         })
         
-        # Colors for different debug elements
+        # Modern high-contrast colors for white room environments
         self.debug_colors = {
-            'skeleton_keypoints': (0, 255, 0),
-            'skeleton_connections': (0, 200, 0),
-            'movement_trail': (255, 255, 0),
-            'movement_vector': (255, 200, 0),
-            'depth_roi': (255, 0, 0),
-            'depth_gradient': (200, 0, 0),
-            'confidence_high': (0, 255, 0),
-            'confidence_medium': (255, 255, 0),
-            'confidence_low': (255, 0, 0),
-            'method_skeleton': (0, 255, 0),
-            'method_movement': (255, 255, 0),
-            'method_depth': (255, 0, 0),
-            'method_combined': (0, 255, 255)
+            'skeleton_keypoints': (20, 180, 20),     # Deep green
+            'skeleton_connections': (30, 160, 30),   # Slightly darker green
+            'movement_trail': (255, 140, 0),         # Bright orange
+            'movement_vector': (255, 160, 20),       # Lighter orange
+            'depth_roi': (220, 20, 60),              # Crimson red
+            'depth_gradient': (180, 40, 80),         # Darker red
+            'confidence_high': (20, 180, 20),        # Green
+            'confidence_medium': (255, 140, 0),      # Orange
+            'confidence_low': (220, 20, 60),         # Red
+            'method_skeleton': (20, 180, 20),        # Green
+            'method_movement': (255, 140, 0),        # Orange  
+            'method_depth': (220, 20, 60),           # Red
+            'method_combined': (0, 150, 255)         # Bright blue
         }
     
     def visualize_with_debug(self, frame: np.ndarray, tracked_people: List, 
