@@ -113,13 +113,28 @@ def test_movement_detection():
                     )
                     
                     if orientation:
-                        movement_orientations = [o for o in orientation if o.method == 'movement']
-                        if movement_orientations:
+                        # Check if movement method contributed to the final orientation
+                        person_debug = debug_data.get(person.id, {})
+                        movement_attempts = person_debug.get('method_attempts', {})
+                        
+                        if 'movement_based' in movement_attempts and movement_attempts['movement_based']['success']:
                             movement_detections += 1
-                            orient = movement_orientations[0]
-                            print(f"  ✓ MOVEMENT DETECTED: {orient.orientation_angle:.1f}° (conf: {orient.confidence:.2f})")
+                            movement_result = movement_attempts['movement_based']
+                            print(f"  ✓ MOVEMENT DETECTED: {movement_result['angle']:.1f}° (conf: {movement_result['confidence']:.2f})")
+                            
+                            # Show the final combined result
+                            final_orient = orientation[0] if orientation else None
+                            if final_orient:
+                                print(f"    Final result: {final_orient.orientation_angle:.1f}° (method: {final_orient.method}, conf: {final_orient.confidence:.2f})")
                         else:
                             print(f"  ✗ No movement orientation")
+                            # Show what methods were attempted
+                            if movement_attempts:
+                                for method, result in movement_attempts.items():
+                                    status = "✓" if result['success'] else "✗"
+                                    print(f"    {status} {method}: conf {result.get('confidence', 0):.2f}")
+                            else:
+                                print(f"    No method attempts recorded")
                     
                     # Show debug data
                     person_debug = debug_data.get(person.id, {})

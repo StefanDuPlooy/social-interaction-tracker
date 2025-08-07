@@ -154,7 +154,6 @@ class OrientationEstimator:
                     estimate, movement_debug = self._movement_based_orientation_with_debug(person, timestamp)
                     debug_data['movement_data'] = movement_debug
                     success_key = 'movement'
-                    self.logger.debug(f"Movement detection returned: estimate={estimate is not None}, debug_issues={movement_debug.get('issues', [])}")
                 elif method_name == 'depth_gradient':
                     estimate, depth_debug = self._depth_gradient_orientation_with_debug(person, depth_frame, timestamp)
                     debug_data['depth_data'] = depth_debug
@@ -454,6 +453,9 @@ class OrientationEstimator:
             self.logger.debug(f"Person {person.id} movement detection failed: {', '.join(issues)}")
             return None, debug_data
         
+        # Get recent positions for debug output (always needed)
+        recent_positions = position_history[-5:]  # Last 5 positions
+        
         # Try using tracker's calculated velocity first (more reliable)
         if velocity_info and any(abs(v) > 0.001 for v in velocity_info[:2]):  # Check x, y velocity
             velocity_vec = np.array(velocity_info[:2])  # x, y velocity
@@ -468,9 +470,6 @@ class OrientationEstimator:
         else:
             # Fall back to position-based calculation
             debug_data['velocity_source'] = 'position_difference'
-            
-            # Use multiple position differences for better accuracy
-            recent_positions = position_history[-5:]  # Last 5 positions
             if len(recent_positions) < 2:
                 debug_data['issues'].append("Insufficient recent positions")
                 return None, debug_data
