@@ -305,24 +305,104 @@ class OrientationEstimator:
             confidence = 0.3  # Base confidence
             joint_count = len(visible_keypoints)
             
-            # Try body orientation from shoulders
+            # Try body orientation from shoulders with improved 3D calculation
             if left_shoulder is not None and right_shoulder is not None:
-                # Calculate shoulder vector (in ROI coordinates)
+                # Get 3D position of person for context
+                person_3d_pos = person.current_detection.position_3d if person.current_detection else (0, 0, 0)
+                
+                # Calculate shoulder vector in image coordinates
                 shoulder_vec = right_shoulder[:2] - left_shoulder[:2]
-                
-                # Body faces perpendicular to shoulder line
-                # Perpendicular vector (rotate 90 degrees)
-                body_vec = np.array([-shoulder_vec[1], shoulder_vec[0]])
-                
-                # Convert to angle (0 = facing up in image)
-                body_angle = math.degrees(math.atan2(body_vec[1], body_vec[0]))
-                confidence = 0.7
-                joint_count = 2  # shoulders
+                shoulder_length = np.linalg.norm(shoulder_vec)
                 
                 debug_data['shoulder_vector'] = shoulder_vec.tolist()
-                debug_data['body_angle'] = body_angle
+                debug_data['shoulder_length'] = float(shoulder_length)
+                debug_data['person_3d_position'] = person_3d_pos
                 
-                self.logger.info(f"Person {person.id}: Body angle from shoulders: {body_angle:.1f}°")
+                # Improved orientation calculation considering camera perspective
+                if shoulder_length > 10:  # Minimum shoulder separation in pixels
+                    # Calculate shoulder angle relative to horizontal
+                    shoulder_angle = math.degrees(math.atan2(shoulder_vec[1], shoulder_vec[0]))
+                    
+                    # Convert shoulder line to body facing direction using depth context
+                    # Key insight: Use shoulder tilt and person's position relative to camera center
+                    
+                    # Get person center relative to image center for perspective correction
+                    img_center_x = person_roi.shape[1] / 2
+                    person_center_x = (left_shoulder[0] + right_shoulder[0]) / 2
+                    center_offset = person_center_x - img_center_x
+                    
+                    # Base body orientation perpendicular to shoulder line
+                    # Note: Image coordinates have Y pointing down, so we need to correct for this
+                    body_vec = np.array([-shoulder_vec[1], shoulder_vec[0]])
+                    
+                    # Convert from image coordinate system to standard coordinate system
+                    # In image coords: +X = right, +Y = down
+                    # In standard coords: +X = right, +Y = up  
+                    # For orientation: 0° = toward camera (negative Y in image coords)
+                    
+                    # Calculate angle in image coordinate system
+                    raw_body_angle = math.degrees(math.atan2(body_vec[1], body_vec[0]))
+                    
+                    # Convert to our orientation coordinate system where:
+                    # 0° = facing toward camera (up in image = negative Y direction)
+                    # 90° = facing right (+X direction)  
+                    # 180° = facing away from camera (down in image = positive Y direction)
+                    # 270° = facing left (-X direction)
+                    
+                    # The key insight: In image coordinates Y is flipped
+                    # Standard atan2 gives angle from +X axis counterclockwise
+                    # But in image coords, +Y is down, so we need to correct
+                    # For facing UP (toward camera) we want 0°
+                    # For facing DOWN (away from camera) we want 180°
+                    # For facing RIGHT we want 90°
+                    # For facing LEFT we want 270°
+                    
+                    # Simplified approach: just apply coordinate correction
+                    # No complex direction forcing - let's see the raw behavior first
+                    corrected_angle = (raw_body_angle + 90) % 360
+                    
+                    debug_data['simple_correction_applied'] = True
+                    
+                    # Enhanced orientation calculation with depth analysis
+                    # Try to get shoulder depth information for better orientation
+                    shoulder_depth_diff = None
+                    try:
+                        # Attempt to get depth at shoulder positions if depth frame available
+                        # This would require depth frame access - for now use position context
+                        if hasattr(person.current_detection, 'depth') and person.current_detection.depth > 0:
+                            # Use overall depth as baseline
+                            baseline_depth = person.current_detection.depth
+                            debug_data['baseline_depth'] = float(baseline_depth)
+                        else:
+                            baseline_depth = person_3d_pos[2] if person_3d_pos[2] > 0 else None
+                    except:
+                        baseline_depth = None
+                    
+                    # Simplified: just use the corrected angle without complex context logic
+                    body_angle = corrected_angle
+                    confidence = 0.7
+                    debug_data['using_simple_corrected_angle'] = True
+                    
+                    # Normalize to 0-360
+                    body_angle = (body_angle + 360) % 360
+                    
+                    # Simplified temporal smoothing - no smoothing for now to debug
+                    # This removes the potential feedback loop
+                    debug_data['no_temporal_smoothing'] = True
+                    
+                    joint_count = 2  # shoulders
+                    
+                    debug_data['raw_body_angle'] = raw_body_angle
+                    debug_data['corrected_angle'] = corrected_angle
+                    debug_data['shoulder_angle'] = shoulder_angle
+                    debug_data['center_offset'] = float(center_offset)
+                    debug_data['body_angle'] = body_angle
+                    debug_data['final_confidence'] = confidence
+                    
+                    self.logger.info(f"Person {person.id}: Body angle from shoulders: {body_angle:.1f}° (raw: {raw_body_angle:.1f}°, corrected: {corrected_angle:.1f}°, shoulder_tilt: {shoulder_angle:.1f}°, shoulder_vec: [{shoulder_vec[0]:.1f}, {shoulder_vec[1]:.1f}], body_vec: [{body_vec[0]:.1f}, {body_vec[1]:.1f}], conf: {confidence:.2f})")
+                else:
+                    debug_data['issues'].append(f"Shoulder separation too small: {shoulder_length:.1f}px")
+                    self.logger.warning(f"Person {person.id}: Shoulder separation too small for reliable orientation")
                 
             # Try head orientation from face keypoints  
             if nose is not None:
@@ -334,12 +414,16 @@ class OrientationEstimator:
                     eye_vec = right_eye[:2] - left_eye[:2]
                     # Face direction perpendicular to eye line
                     face_vec = np.array([-eye_vec[1], eye_vec[0]])
-                    head_angle = math.degrees(math.atan2(face_vec[1], face_vec[0]))
+                    raw_head_angle = math.degrees(math.atan2(face_vec[1], face_vec[0]))
+                    
+                    # Apply same coordinate system correction as body angle
+                    head_angle = (raw_head_angle + 90) % 360
                     
                     debug_data['eye_vector'] = eye_vec.tolist()
+                    debug_data['raw_head_angle'] = raw_head_angle
                     debug_data['head_angle'] = head_angle
                     
-                    self.logger.info(f"Person {person.id}: Head angle from eyes: {head_angle:.1f}°")
+                    self.logger.info(f"Person {person.id}: Head angle from eyes: {head_angle:.1f}° (raw: {raw_head_angle:.1f}°)")
             
             # Choose best orientation estimate
             final_angle = None
